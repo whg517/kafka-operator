@@ -73,7 +73,7 @@ var _ = Describe("TLS secret provisioner", func() {
 		Expect(annotations).To(HaveKeyWithValue("secrets.kubedoop.dev/class", "tls"))
 		Expect(annotations).To(HaveKeyWithValue("secrets.kubedoop.dev/scope",
 			"listener-volume=listener-broker,listener-volume=listener-bootstrap,pod,node"))
-		Expect(annotations).To(HaveKeyWithValue("secrets.kubedoop.dev/autoTlsCertLifetime", "7d"))
+		Expect(annotations).To(HaveKeyWithValue("secrets.kubedoop.dev/autoTlsCertLifetime", "168h0m0s"))
 		Expect(annotations).To(HaveKeyWithValue("secrets.kubedoop.dev/tlsPKCS12Password", "changeit"))
 	})
 

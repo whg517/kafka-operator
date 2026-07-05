@@ -3,7 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/listener"
@@ -12,12 +14,30 @@ import (
 	opgosecurity "github.com/zncdatadev/operator-go/pkg/security"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
 	"github.com/zncdatadev/kafka-operator/internal/util/version"
 )
+
+var logger = ctrl.Log.WithName("kafka-handler")
+
+// parseSecretLifetime parses a certificate lifetime expression. On top of Go duration
+// syntax it supports the day suffix documented in the CRD ("1d", "7d", "30d") —
+// secret-operator itself parses the annotation with Go duration syntax only.
+func parseSecretLifetime(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "d") {
+		days, err := strconv.ParseFloat(strings.TrimSuffix(s, "d"), 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid day expression %q: %w", s, err)
+		}
+		return time.Duration(days * 24 * float64(time.Hour)), nil
+	}
+	return time.ParseDuration(s)
+}
 
 // RBAC for the GenericReconciler-driven KafkaCluster controller: the CR itself, the role
 // group resources the framework applies (ConfigMap/Services/StatefulSet/PDB/SA), the
@@ -211,10 +231,16 @@ func (h *KafkaRoleGroupHandler) buildSecretProvisioner(
 			reg.WithPassword(kafkaSecurity.SSLStorePassword)
 		}
 		if brokerCfg.RequestedSecretLifeTime != "" {
-			// The lifetime is a secret-operator duration expression (e.g. "7d"), passed
-			// through verbatim; WithCertLifetime(time.Duration) would re-serialize it in Go
-			// notation, which secret-operator does not parse.
-			reg.WithExtraAnnotation(opgosecurity.AnnotationSecretsCertLifetime, brokerCfg.RequestedSecretLifeTime)
+			// The CRD documents day expressions ("7d", "30d"); secret-operator parses the
+			// annotation with Go duration syntax, so convert before handing it to the
+			// framework. Invalid expressions are skipped (secret-operator would reject the
+			// whole volume otherwise, wedging the pod in Pending).
+			if lifetime, err := parseSecretLifetime(brokerCfg.RequestedSecretLifeTime); err == nil {
+				reg.WithCertLifetime(lifetime)
+			} else {
+				logger.V(0).Info("ignoring invalid requestedSecretLifeTime",
+					"value", brokerCfg.RequestedSecretLifeTime, "error", err.Error())
+			}
 		}
 		provisioner.Register(reg)
 	}
