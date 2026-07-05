@@ -16,6 +16,7 @@ import (
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
+	"github.com/zncdatadev/kafka-operator/internal/util/version"
 )
 
 // RBAC for the GenericReconciler-driven KafkaCluster controller: the CR itself, the role
@@ -262,29 +263,32 @@ func (h *KafkaRoleGroupHandler) buildBootstrapListener(
 	return NewBootstrapListener(name, buildCtx.ClusterNamespace, labels, brokerCfg.BootstrapListenerClass, kafkaSecurity)
 }
 
-// resolveImage constructs the container image string from the CR spec.
+// resolveImage constructs the container image string from the CR spec. Kubedoop product
+// images are tagged "<productVersion>-kubedoop<kubedoopVersion>"; when the CR does not pin
+// a kubedoop version, the operator's own build version is used (dev operator -> dev image),
+// matching the pre-framework behavior.
 func (h *KafkaRoleGroupHandler) resolveImage(cr *kafkav1alpha1.KafkaCluster) string {
-	if cr.Spec.Image == nil {
-		return fmt.Sprintf("%s/%s:%s", kafkav1alpha1.DefaultRepository,
-			kafkav1alpha1.DefaultProductName, kafkav1alpha1.DefaultProductVersion)
+	repo := kafkav1alpha1.DefaultRepository
+	productVersion := kafkav1alpha1.DefaultProductVersion
+	kubedoopVersion := version.BuildVersion
+
+	if img := cr.Spec.Image; img != nil {
+		if img.Custom != "" {
+			return img.Custom
+		}
+		if img.Repo != "" {
+			repo = img.Repo
+		}
+		if img.ProductVersion != "" {
+			productVersion = img.ProductVersion
+		}
+		if img.KubedoopVersion != "" {
+			kubedoopVersion = img.KubedoopVersion
+		}
 	}
-	img := cr.Spec.Image
-	if img.Custom != "" {
-		return img.Custom
-	}
-	repo := img.Repo
-	if repo == "" {
-		repo = kafkav1alpha1.DefaultRepository
-	}
-	productVersion := img.ProductVersion
-	if productVersion == "" {
-		productVersion = kafkav1alpha1.DefaultProductVersion
-	}
-	if img.KubedoopVersion != "" {
-		return fmt.Sprintf("%s/%s:%s-kubedoop%s",
-			repo, kafkav1alpha1.DefaultProductName, productVersion, img.KubedoopVersion)
-	}
-	return fmt.Sprintf("%s/%s:%s", repo, kafkav1alpha1.DefaultProductName, productVersion)
+
+	return fmt.Sprintf("%s/%s:%s-kubedoop%s",
+		repo, kafkav1alpha1.DefaultProductName, productVersion, kubedoopVersion)
 }
 
 // brokerConfig carries the Kafka-specific role group settings that live outside the
