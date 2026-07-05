@@ -1,14 +1,22 @@
 package controller
 
-const (
-	Kafka  ContainerComponent = "kafka"
-	Vector ContainerComponent = "vector"
+import (
+	"strings"
+
+	opgoconstant "github.com/zncdatadev/operator-go/pkg/constant"
 )
 
-// mount
+// Writable product directories inside the container. Config is copied from the framework's
+// read-only ConfigMap mount (opgoconstant.KubedoopConfigDirMount) into KubedoopConfigDir at
+// startup; data is the PVC mount managed by the framework builder.
+var (
+	KubedoopConfigDir = strings.TrimSuffix(opgoconstant.KubedoopConfigDir, "/")
+	KubedoopDataDir   = strings.TrimSuffix(opgoconstant.KubedoopDataDir, "/")
+	KubedoopRoot      = strings.TrimSuffix(opgoconstant.KubedoopRoot, "/")
+)
+
 const (
 	ZookeeperDiscoveryKey = "ZOOKEEPER"
-	NodePortFileName      = "kafka_nodeport"
 )
 
 const (
@@ -17,6 +25,5 @@ const (
 	EnvKafkaLog4jOpts       = "KAFKA_LOG4J_OPTS"
 	EnvKafkaHeapOpts        = "KAFKA_HEAP_OPTS"
 	EnvNode                 = "NODE"
-	EnvNodePort             = "NODE_PORT"
 	EnvPodName              = "POD_NAME"
 )

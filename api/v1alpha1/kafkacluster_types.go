@@ -17,11 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/zncdatadev/operator-go/pkg/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
+	"github.com/zncdatadev/operator-go/pkg/common"
 )
 
 const (
@@ -31,45 +32,51 @@ const (
 )
 
 const (
+	// BrokerRoleName is the single Kafka role, used as the role key and component label value.
+	BrokerRoleName = "broker"
+
+	// KafkaContainerName is the main container name. It is significant: it must match the
+	// per-container logging key (logging.containers.kafka) and drives the log file name the
+	// Vector sidecar globs (<container>.stdout.log).
+	KafkaContainerName = "kafka"
+
+	// KerberosServiceName is the Kerberos service principal primary for Kafka.
+	KerberosServiceName = "kafka"
+)
+
+const (
 	ClientPortName       = "kafka"
 	SecureClientPortName = "kafka-tls"
 	InternalPortName     = "internal"
 	MetricsPortName      = "metrics"
 	BootstrapPortName    = "bootstrap"
 
-	ClientPort                = 9092
-	SecurityClientPort        = 9093
-	InternalPort              = 19092
-	SecurityInternalPort      = 19093
-	MetricsPort               = 9606
-	PodSvcClientNodePortMin   = 30092
-	PodSvcInternalNodePortMin = 31092
-	BootstrapPort             = 9094
-	BootstrapSecurePort       = 9095
+	ClientPort           = 9092
+	SecurityClientPort   = 9093
+	InternalPort         = 19092
+	SecurityInternalPort = 19093
+	MetricsPort          = 9606
+	BootstrapPort        = 9094
+	BootstrapSecurePort  = 9095
 )
 
 const (
-	ImageRepository = "quay.io/zncdatadev/kafka"
-	ImageTag        = "3.9.0-kubedoop0.0.0-dev"
 	ImagePullPolicy = corev1.PullIfNotPresent
 
-	KubedoopKafkaDataDirName  = "data" // kafka log dirs
-	KubedoopLogConfigDirName  = "log-config"
-	KubedoopConfigDirName     = "config"
-	KubedoopLogDirName        = "log"
-	KubedoopListenerBroker    = "listener-broker"
-	KubedoopListenerBootstrap = "listener-bootstrap"
-	KubedoopKerberosName      = "listener-kerberos"
+	// ListenerBrokerVolumeName is the per-broker listener CSI volume (mounted at
+	// /kubedoop/listener/listener-broker). Its name is referenced by the secret-operator
+	// scope annotation "listener-volume=listener-broker" on the TLS/Kerberos volumes.
+	ListenerBrokerVolumeName = "listener-broker"
+	// ListenerBootstrapVolumeName is the bootstrap listener CSI volume (mounted at
+	// /kubedoop/listener/listener-bootstrap), referencing the role group bootstrap Listener.
+	ListenerBootstrapVolumeName = "listener-bootstrap"
 
-	KubedoopRoot                 = "/kubedoop"
-	KubedoopDataDir              = KubedoopRoot + "/data"
-	KubedoopConfigDir            = KubedoopRoot + "/config"
-	KubedoopLogConfigDir         = KubedoopRoot + "/log_config"
-	KubedoopLogDir               = KubedoopRoot + "/log"
-	KubedoopListenerBrokerDir    = KubedoopRoot + "/listener-broker"
-	KubedoopListenerBootstrapDir = KubedoopRoot + "/listener-bootstrap"
-	KubedoopKerberosDir          = KubedoopRoot + "/kerberos"
-	KubedoopKerberosKrb5Path     = KubedoopKerberosDir + "/krb5.conf"
+	// KerberosVolumeName is the Kerberos keytab CSI volume (mounted at /kubedoop/mount/kerberos).
+	KerberosVolumeName = "kerberos"
+	// TLSKeystoreServerVolumeName is the server TLS keystore CSI volume.
+	TLSKeystoreServerVolumeName = "tls-keystore-server"
+	// TLSKeystoreInternalVolumeName is the internal (broker-to-broker) TLS keystore CSI volume.
+	TLSKeystoreInternalVolumeName = "tls-keystore-internal"
 )
 
 // +kubebuilder:object:root=true
@@ -80,8 +87,124 @@ type KafkaCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   KafkaClusterSpec `json:"spec,omitempty"`
-	Status status.Status    `json:"status,omitempty"`
+	Spec   KafkaClusterSpec   `json:"spec,omitempty"`
+	Status KafkaClusterStatus `json:"status,omitempty"`
+}
+
+// KafkaClusterStatus defines the observed state of KafkaCluster.
+type KafkaClusterStatus struct {
+	commonsv1alpha1.GenericClusterStatus `json:",inline"`
+}
+
+// ClusterInterface implementation
+
+// GetSpec adapts the Kafka spec to the framework's GenericClusterSpec.
+func (k *KafkaCluster) GetSpec() *commonsv1alpha1.GenericClusterSpec {
+	return k.Spec.ToGenericSpec()
+}
+
+// GetStatus returns the cluster status.
+func (k *KafkaCluster) GetStatus() *commonsv1alpha1.GenericClusterStatus {
+	return &k.Status.GenericClusterStatus
+}
+
+// SetStatus updates the cluster status.
+func (k *KafkaCluster) SetStatus(status *commonsv1alpha1.GenericClusterStatus) {
+	k.Status.GenericClusterStatus = *status
+}
+
+// GetObjectMeta returns the object metadata.
+func (k *KafkaCluster) GetObjectMeta() *metav1.ObjectMeta {
+	return &k.ObjectMeta
+}
+
+// GetScheme returns the cached runtime scheme.
+func (k *KafkaCluster) GetScheme() *runtime.Scheme {
+	return cachedScheme
+}
+
+// DeepCopyCluster creates a deep copy of the cluster.
+func (k *KafkaCluster) DeepCopyCluster() common.ClusterInterface {
+	return k.DeepCopy()
+}
+
+// GetRuntimeObject returns the underlying runtime.Object.
+func (k *KafkaCluster) GetRuntimeObject() runtime.Object {
+	return k
+}
+
+// VectorAggregatorConfigMapName implements reconciler.VectorAggregatorProvider so the framework
+// owns vector.yaml generation: when a role group enables the Vector agent, the GenericReconciler
+// resolves the aggregator address from this ConfigMap and renders vector.yaml into the role group
+// ConfigMap. Returns "" when unset (the framework then omits vector.yaml).
+func (k *KafkaCluster) VectorAggregatorConfigMapName() string {
+	if k.Spec.ClusterConfig == nil {
+		return ""
+	}
+	return k.Spec.ClusterConfig.VectorAggregatorConfigMapName
+}
+
+// ToGenericSpec adapts KafkaClusterSpec to the framework's GenericClusterSpec:
+// brokers -> Roles["broker"].
+func (s *KafkaClusterSpec) ToGenericSpec() *commonsv1alpha1.GenericClusterSpec {
+	result := &commonsv1alpha1.GenericClusterSpec{
+		ClusterOperation: s.ClusterOperation,
+	}
+
+	if s.Image != nil {
+		result.Image = &commonsv1alpha1.ImageSpec{
+			Custom:          s.Image.Custom,
+			Repo:            s.Image.Repo,
+			ProductVersion:  s.Image.ProductVersion,
+			KubedoopVersion: s.Image.KubedoopVersion,
+		}
+	}
+
+	if s.Brokers != nil {
+		roleSpec := commonsv1alpha1.RoleSpec{
+			RoleConfig: s.Brokers.Roleconfig,
+		}
+
+		if s.Brokers.Config != nil {
+			roleSpec.Config = s.Brokers.Config.RoleGroupConfigSpec
+		}
+
+		if s.Brokers.OverridesSpec != nil {
+			roleSpec.ConfigOverrides = s.Brokers.ConfigOverrides
+			roleSpec.EnvOverrides = s.Brokers.EnvOverrides
+			roleSpec.CliOverrides = s.Brokers.CliOverrides
+			roleSpec.PodOverrides = s.Brokers.PodOverrides
+		}
+
+		roleGroups := make(map[string]commonsv1alpha1.RoleGroupSpec)
+		for name, rg := range s.Brokers.RoleGroups {
+			if rg == nil {
+				continue
+			}
+			adapted := commonsv1alpha1.RoleGroupSpec{}
+			if rg.Replicas > 0 {
+				r := rg.Replicas
+				adapted.Replicas = &r
+			}
+			if rg.Config != nil {
+				adapted.Config = rg.Config.RoleGroupConfigSpec
+			}
+			if rg.OverridesSpec != nil {
+				adapted.ConfigOverrides = rg.ConfigOverrides
+				adapted.EnvOverrides = rg.EnvOverrides
+				adapted.CliOverrides = rg.CliOverrides
+				adapted.PodOverrides = rg.PodOverrides
+			}
+			roleGroups[name] = adapted
+		}
+		roleSpec.RoleGroups = roleGroups
+
+		result.Roles = map[string]commonsv1alpha1.RoleSpec{
+			BrokerRoleName: roleSpec,
+		}
+	}
+
+	return result
 }
 
 // +kubebuilder:object:root=true
@@ -185,7 +308,7 @@ type BrokersRoleGroupSpec struct {
 	// +kubebuilder:default:=1
 	Replicas int32 `json:"replicas,omitempty"`
 
-	// +kubebuilder:validation：Optional
+	// +kubebuilder:validation:Optional
 	Config *BrokersConfigSpec `json:"config,omitempty"`
 
 	*commonsv1alpha1.OverridesSpec `json:",inline"`
@@ -209,11 +332,12 @@ type BrokersConfigSpec struct {
 	// +kubebuilder:validation:Optional
 	RequestedSecretLifeTime string `json:"requestedSecretLifeTime,omitempty"`
 }
-type ConfigOverridesSpec struct {
-	Server   map[string]string `json:"server.properties,omitempty"`
-	Security map[string]string `json:"security.properties,omitempty"`
-}
+
+// cachedScheme is initialized once and reused across all reconcile calls.
+var cachedScheme *runtime.Scheme
 
 func init() {
 	SchemeBuilder.Register(&KafkaCluster{}, &KafkaClusterList{})
+	cachedScheme = runtime.NewScheme()
+	_ = SchemeBuilder.AddToScheme(cachedScheme)
 }
