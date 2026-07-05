@@ -19,6 +19,12 @@ const (
 	ZookeeperDiscoveryKey = "ZOOKEEPER"
 )
 
+// Descriptive Kubernetes label keys shared by product-built resources.
+const (
+	LabelKubernetesName     = "app.kubernetes.io/name"
+	LabelKubernetesInstance = "app.kubernetes.io/instance"
+)
+
 const (
 	EnvJvmArgs              = "EXTRA_ARGS"
 	EnvZookeeperConnections = "ZOOKEEPER"

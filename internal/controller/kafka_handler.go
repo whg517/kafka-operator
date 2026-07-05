@@ -84,7 +84,7 @@ func NewKafkaRoleGroupHandler(scheme *runtime.Scheme) *KafkaRoleGroupHandler {
 	// app.kubernetes.io/name identifies the product on every resource/pod; the framework's
 	// canonical labels alone (instance + component + managed-by) are not product-unique.
 	h.ExtraLabels = map[string]string{
-		"app.kubernetes.io/name": kafkav1alpha1.DefaultProductName,
+		LabelKubernetesName: kafkav1alpha1.DefaultProductName,
 	}
 	h.ExtraAnnotations = map[string]string{}
 	// Brokers must resolve each other before readiness, and topic data must be persistent.

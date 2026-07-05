@@ -160,51 +160,58 @@ func (s *KafkaClusterSpec) ToGenericSpec() *commonsv1alpha1.GenericClusterSpec {
 		}
 	}
 
-	if s.Brokers != nil {
-		roleSpec := commonsv1alpha1.RoleSpec{
-			RoleConfig: s.Brokers.Roleconfig,
-		}
+	if s.Brokers == nil {
+		return result
+	}
 
-		if s.Brokers.Config != nil {
-			roleSpec.Config = s.Brokers.Config.RoleGroupConfigSpec
-		}
+	roleSpec := commonsv1alpha1.RoleSpec{
+		RoleConfig: s.Brokers.Roleconfig,
+	}
 
-		if s.Brokers.OverridesSpec != nil {
-			roleSpec.ConfigOverrides = s.Brokers.ConfigOverrides
-			roleSpec.EnvOverrides = s.Brokers.EnvOverrides
-			roleSpec.CliOverrides = s.Brokers.CliOverrides
-			roleSpec.PodOverrides = s.Brokers.PodOverrides
-		}
+	if s.Brokers.Config != nil {
+		roleSpec.Config = s.Brokers.Config.RoleGroupConfigSpec
+	}
 
-		roleGroups := make(map[string]commonsv1alpha1.RoleGroupSpec)
-		for name, rg := range s.Brokers.RoleGroups {
-			if rg == nil {
-				continue
-			}
-			adapted := commonsv1alpha1.RoleGroupSpec{}
-			if rg.Replicas > 0 {
-				r := rg.Replicas
-				adapted.Replicas = &r
-			}
-			if rg.Config != nil {
-				adapted.Config = rg.Config.RoleGroupConfigSpec
-			}
-			if rg.OverridesSpec != nil {
-				adapted.ConfigOverrides = rg.ConfigOverrides
-				adapted.EnvOverrides = rg.EnvOverrides
-				adapted.CliOverrides = rg.CliOverrides
-				adapted.PodOverrides = rg.PodOverrides
-			}
-			roleGroups[name] = adapted
-		}
-		roleSpec.RoleGroups = roleGroups
+	if s.Brokers.OverridesSpec != nil {
+		roleSpec.ConfigOverrides = s.Brokers.ConfigOverrides
+		roleSpec.EnvOverrides = s.Brokers.EnvOverrides
+		roleSpec.CliOverrides = s.Brokers.CliOverrides
+		roleSpec.PodOverrides = s.Brokers.PodOverrides
+	}
 
-		result.Roles = map[string]commonsv1alpha1.RoleSpec{
-			BrokerRoleName: roleSpec,
+	roleGroups := make(map[string]commonsv1alpha1.RoleGroupSpec)
+	for name, rg := range s.Brokers.RoleGroups {
+		if rg == nil {
+			continue
 		}
+		roleGroups[name] = adaptRoleGroup(rg)
+	}
+	roleSpec.RoleGroups = roleGroups
+
+	result.Roles = map[string]commonsv1alpha1.RoleSpec{
+		BrokerRoleName: roleSpec,
 	}
 
 	return result
+}
+
+// adaptRoleGroup converts a Kafka role group spec to the framework's generic shape.
+func adaptRoleGroup(rg *BrokersRoleGroupSpec) commonsv1alpha1.RoleGroupSpec {
+	adapted := commonsv1alpha1.RoleGroupSpec{}
+	if rg.Replicas > 0 {
+		r := rg.Replicas
+		adapted.Replicas = &r
+	}
+	if rg.Config != nil {
+		adapted.Config = rg.Config.RoleGroupConfigSpec
+	}
+	if rg.OverridesSpec != nil {
+		adapted.ConfigOverrides = rg.ConfigOverrides
+		adapted.EnvOverrides = rg.EnvOverrides
+		adapted.CliOverrides = rg.CliOverrides
+		adapted.PodOverrides = rg.PodOverrides
+	}
+	return adapted
 }
 
 // +kubebuilder:object:root=true

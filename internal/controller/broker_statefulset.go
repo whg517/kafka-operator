@@ -284,7 +284,7 @@ func defaultAffinity(clusterName string) *corev1.Affinity {
 					PodAffinityTerm: corev1.PodAffinityTerm{
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{
-								"app.kubernetes.io/instance":  clusterName,
+								LabelKubernetesInstance:       clusterName,
 								"app.kubernetes.io/component": kafkav1alpha1.BrokerRoleName,
 							},
 						},

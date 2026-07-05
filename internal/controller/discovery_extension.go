@@ -82,7 +82,7 @@ func (e *DiscoveryExtension) ensureDiscoveryConfigMaps(ctx context.Context, c cl
 	if err := c.List(ctx, listenerList,
 		client.InNamespace(cr.Namespace),
 		client.MatchingLabels{
-			LabelListenerBootstrap:                LabelValueTrue,
+			LabelListenerBootstrap:                  LabelValueTrue,
 			reconciler.ClusterLabelKey(LabelDomain): cr.Name,
 		},
 	); err != nil {
@@ -103,9 +103,9 @@ func (e *DiscoveryExtension) ensureDiscoveryConfigMaps(ctx context.Context, c cl
 		}
 		_, err := controllerutil.CreateOrUpdate(ctx, c, cm, func() error {
 			cm.Labels = map[string]string{
-				"app.kubernetes.io/name":                 kafkav1alpha1.DefaultProductName,
-				"app.kubernetes.io/instance":             cr.Name,
-				reconciler.ClusterLabelKey(LabelDomain):  cr.Name,
+				LabelKubernetesName:                     kafkav1alpha1.DefaultProductName,
+				LabelKubernetesInstance:                 cr.Name,
+				reconciler.ClusterLabelKey(LabelDomain): cr.Name,
 			}
 			cm.Data = map[string]string{
 				KafkaDiscoveryKey: bootstrapServers,
