@@ -333,6 +333,14 @@ setup-chainsaw-cluster: ## Set up a Kind cluster for e2e tests if it does not ex
 		done; \
 	fi
 
+	@# secret-operator validates cross-namespace SecretClass references (secret-operator#358);
+	@# the default "tls" SecretClass keeps its CA secret in the operator namespace, so allow
+	@# test-namespace pods to reference it until the chart ships the annotation itself.
+	@if kubectl --kubeconfig $(CHAINSAW_KUBECONFIG) get secretclass tls >/dev/null 2>&1; then \
+		kubectl --kubeconfig $(CHAINSAW_KUBECONFIG) annotate secretclass tls \
+			"secrets.kubedoop.dev/allowed-namespaces=kubedoop-operators" --overwrite; \
+	fi
+
 .PHONY: setup-chainsaw-e2e
 setup-chainsaw-e2e: chainsaw docker-build ## Run the chainsaw setup
 	"$(KIND)" --name $(CHAINSAW_CLUSTER) load docker-image "$(IMG)"
