@@ -51,9 +51,11 @@ spec:
             value: ($namespace)
         content: |
           #!/bin/bash
-          # Get logs from vector-aggregator-0 and check for specific log pattern
+          # Get logs from vector-aggregator-0 and check for specific log pattern.
+          # The framework-owned Vector pipeline ships plain-text file logs from the shared
+          # log volume; events carry the source file path and the cluster identity tags.
           kubectl -n $NAMESPACE logs statefulset/vector-aggregator -c vector | \
-            grep -q '"cluster":"kafkacluster-sample","container":"kafka","errors":\[\],"file":"kafka.log4j.xml"'
+            grep -q '"file":"/kubedoop/log/kafka.stdout.log".*"cluster":"kafkacluster-sample"'
           exit_code=$?
 
           if [ $exit_code -eq 0 ]; then
