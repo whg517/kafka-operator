@@ -147,7 +147,9 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		WebhookServer:          webhookServer,
-		LeaderElectionID:       "a3f45c8e.kubedoop.dev",
+		// Keep the pre-refactor Lease name: changing it would let old and new pods each
+		// hold "leadership" on different Leases during a rolling upgrade (split-brain).
+		LeaderElectionID: "6e8ac606.kubedoop.dev",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

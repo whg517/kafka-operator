@@ -131,11 +131,14 @@ func (h *KafkaRoleGroupHandler) getMainContainerArgs(
 		// The framework mounts the config ConfigMap read-only at KubedoopConfigDirMount;
 		// copy it into the writable config dir (server.properties, security.properties and
 		// log4j.properties included — all in that ConfigMap).
+		// The glob strips any trailing slash from the mount constant first, so the copy
+		// works regardless of how the framework formats the path; quoting guards the
+		// non-glob expansions.
 		fmt.Sprintf(`CONFIG_DIR_MOUNT=%s
 CONFIG_DIR=%s
-mkdir --parents ${CONFIG_DIR}
-echo copying ${CONFIG_DIR_MOUNT} to ${CONFIG_DIR}
-cp -RL ${CONFIG_DIR_MOUNT}* ${CONFIG_DIR}`, opgoconstant.KubedoopConfigDirMount, KubedoopConfigDir),
+mkdir --parents "${CONFIG_DIR}"
+echo copying "${CONFIG_DIR_MOUNT}" to "${CONFIG_DIR}"
+cp -RL "${CONFIG_DIR_MOUNT%%/}"/* "${CONFIG_DIR}"`, opgoconstant.KubedoopConfigDirMount, KubedoopConfigDir),
 	}
 
 	if kafkaSecurity.IsKerberosEnabled() {

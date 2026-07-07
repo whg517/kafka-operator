@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zncdatadev/operator-go/pkg/builder"
@@ -89,6 +90,13 @@ var kafkaServerLogging = productlogging.ContainerLogging{
 // framework applies it before the StatefulSet (pods mount a CSI volume referencing it).
 type KafkaRoleGroupHandler struct {
 	reconciler.BaseRoleGroupHandler[*kafkav1alpha1.KafkaCluster]
+
+	// mu serializes BuildResources: the per-CR inputs (Image, RoleContainerPorts,
+	// RoleServicePorts) are handler-wide fields on a shared instance, so concurrent
+	// reconciles (if MaxConcurrentReconciles is ever raised) would race and leak
+	// configuration between clusters. Serializing keeps the set-then-build sequence
+	// atomic per reconcile.
+	mu sync.Mutex
 }
 
 var _ reconciler.RoleGroupHandler[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroupHandler{}
@@ -129,6 +137,9 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 	cr *kafkav1alpha1.KafkaCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 ) (*reconciler.RoleGroupResources, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	if buildCtx.RoleName != kafkav1alpha1.BrokerRoleName {
 		return nil, fmt.Errorf("unsupported role: %s", buildCtx.RoleName)
 	}
