@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -102,18 +104,30 @@ var _ = Describe("Discovery bootstrap servers", func() {
 				{Address: "10.0.0.2", Ports: map[string]int32{"kafka": 9092}},
 			}}},
 		}}
-		servers, err := makeBootstrapServers(list, "kafka")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(servers).To(Equal("10.0.0.1:9092,10.0.0.2:9092"))
+		Expect(makeBootstrapServers(context.Background(), list, "kafka")).To(Equal("10.0.0.1:9092,10.0.0.2:9092"))
 	})
 
-	It("fails loudly when the port name is missing", func() {
+	It("skips listeners without the requested port instead of failing", func() {
 		list := &listenerv1alpha1.ListenerList{Items: []listenerv1alpha1.Listener{
 			{Status: listenerv1alpha1.ListenerStatus{IngressAddresses: []listenerv1alpha1.IngressAddressSpec{
 				{Address: "10.0.0.1", Ports: map[string]int32{"other": 1}},
+				{Address: "10.0.0.2", Ports: map[string]int32{"kafka": 9092}},
 			}}},
 		}}
-		_, err := makeBootstrapServers(list, "kafka")
-		Expect(err).To(HaveOccurred())
+		Expect(makeBootstrapServers(context.Background(), list, "kafka")).To(Equal("10.0.0.2:9092"))
+	})
+
+	It("computes the expected bootstrap listener set from the spec", func() {
+		cr := &kafkav1alpha1.KafkaCluster{}
+		cr.Name = "kafkacluster"
+		cr.Spec.Brokers = &kafkav1alpha1.BrokersSpec{
+			RoleGroups: map[string]*kafkav1alpha1.BrokersRoleGroupSpec{
+				"default": {}, "extra": {},
+			},
+		}
+		expected := expectedBootstrapListeners(cr)
+		Expect(expected).To(HaveKey("kafkacluster-broker-default-bootstrap"))
+		Expect(expected).To(HaveKey("kafkacluster-broker-extra-bootstrap"))
+		Expect(expected).To(HaveLen(2))
 	})
 })

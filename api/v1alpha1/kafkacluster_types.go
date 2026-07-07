@@ -198,10 +198,11 @@ func (s *KafkaClusterSpec) ToGenericSpec() *commonsv1alpha1.GenericClusterSpec {
 // adaptRoleGroup converts a Kafka role group spec to the framework's generic shape.
 func adaptRoleGroup(rg *BrokersRoleGroupSpec) commonsv1alpha1.RoleGroupSpec {
 	adapted := commonsv1alpha1.RoleGroupSpec{}
-	if rg.Replicas > 0 {
-		r := rg.Replicas
-		adapted.Replicas = &r
-	}
+	// Always carry the stored value: an explicit `replicas: 0` (scale-down) must reach the
+	// StatefulSet — mapping it to nil would let the framework default it back to 1. Omitted
+	// replicas are defaulted to 1 by the CRD before they ever get here.
+	replicas := rg.Replicas
+	adapted.Replicas = &replicas
 	if rg.Config != nil {
 		adapted.Config = rg.Config.RoleGroupConfigSpec
 	}
@@ -253,7 +254,7 @@ type ClusterConfigSpec struct {
 	// +kubebuilder:validation:Optional
 	VectorAggregatorConfigMapName string `json:"vectorAggregatorConfigMapName,omitempty"`
 
-	// +kubebuilder:validation:required
+	// +kubebuilder:validation:Required
 	ZookeeperConfigMapName string `json:"zookeeperConfigMapName,omitempty"`
 }
 

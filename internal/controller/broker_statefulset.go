@@ -29,11 +29,21 @@ const defaultStorageCapacity = "2Gi"
 // defaultGracefulShutdownTimeout mirrors the pre-framework default termination grace.
 const defaultGracefulShutdownTimeout = 30 * time.Second
 
-// ensureStorageDefault makes sure the merged role group config carries a storage spec, so
-// the framework's StatefulSetBuilder.WithStorage builds the data PVC even when the user
-// omits resources.storage. Without this the "data" volume mount has no backing PVC and the
-// StatefulSet is rejected.
-func (h *KafkaRoleGroupHandler) ensureStorageDefault(buildCtx *reconciler.RoleGroupBuildContext) {
+// Pre-framework broker resource defaults: they guarantee requests/limits (and thus the
+// KAFKA_HEAP_OPTS derived from the memory limit) even for a minimal KafkaCluster.
+const (
+	defaultCPURequest  = "250m"
+	defaultCPULimit    = "1000m"
+	defaultMemoryLimit = "1Gi"
+)
+
+// ensureResourceDefaults makes sure the merged role group config carries the Kafka resource
+// defaults for anything the user omitted, restoring pre-framework behavior:
+//   - storage: without it the "data" volume mount has no backing PVC and the StatefulSet is
+//     rejected;
+//   - CPU/memory: without them broker pods run BestEffort with the JVM default heap (a
+//     quarter of node RAM) — the memory limit also drives KAFKA_HEAP_OPTS (80%).
+func (h *KafkaRoleGroupHandler) ensureResourceDefaults(buildCtx *reconciler.RoleGroupBuildContext) {
 	cfg := buildCtx.RoleGroupSpec.Config
 	if cfg == nil {
 		cfg = &commonsv1alpha1.RoleGroupConfigSpec{}
@@ -47,6 +57,17 @@ func (h *KafkaRoleGroupHandler) ensureStorageDefault(buildCtx *reconciler.RoleGr
 		cfg.Resources.Storage = &commonsv1alpha1.StorageResource{Capacity: resource.MustParse(defaultStorageCapacity)}
 	case cfg.Resources.Storage.Capacity.IsZero():
 		cfg.Resources.Storage.Capacity = resource.MustParse(defaultStorageCapacity)
+	}
+	if cfg.Resources.CPU == nil {
+		cfg.Resources.CPU = &commonsv1alpha1.CPUResource{
+			Min: resource.MustParse(defaultCPURequest),
+			Max: resource.MustParse(defaultCPULimit),
+		}
+	}
+	if cfg.Resources.Memory == nil {
+		cfg.Resources.Memory = &commonsv1alpha1.MemoryResource{
+			Limit: resource.MustParse(defaultMemoryLimit),
+		}
 	}
 }
 
@@ -76,18 +97,29 @@ func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 	// The framework renamed the primary container to "kafka"
 	// (BaseRoleGroupHandler.MainContainerName) and gave it the framework-managed
 	// config/data mounts plus the registered CSI volume mounts, so we only set the
-	// command, env and probes here.
+	// command, env and probes here. The builder applied the user's podOverrides BEFORE this
+	// customization runs, so every field is set only when the user's override container did
+	// not set it — user podOverrides keep precedence (pre-framework behavior).
 	main := &podSpec.Containers[0]
-	main.Command = []string{"/bin/bash", "-x", "-euo", "pipefail", "-c"}
-	args, err := h.getMainContainerArgs(buildCtx, kafkaSecurity, secretProvisioner, listenerProvisioner)
-	if err != nil {
-		return err
+	override := podOverrideContainer(buildCtx, main.Name)
+	if len(override.Command) == 0 {
+		main.Command = []string{"/bin/bash", "-x", "-euo", "pipefail", "-c"}
 	}
-	main.Args = args
+	if len(override.Args) == 0 {
+		args, err := h.getMainContainerArgs(buildCtx, kafkaSecurity, secretProvisioner, listenerProvisioner)
+		if err != nil {
+			return err
+		}
+		main.Args = args
+	}
 	// User envOverrides (already on the container from the builder) win over our defaults.
 	main.Env = append(h.getEnvVars(buildCtx, cr, kafkaSecurity, secretProvisioner), main.Env...)
-	main.ReadinessProbe = h.getReadinessProbe(kafkaSecurity)
-	main.LivenessProbe = h.getLivenessProbe(kafkaSecurity)
+	if override.ReadinessProbe == nil {
+		main.ReadinessProbe = h.getReadinessProbe(kafkaSecurity)
+	}
+	if override.LivenessProbe == nil {
+		main.LivenessProbe = h.getLivenessProbe(kafkaSecurity)
+	}
 
 	// Config affinity and gracefulShutdownTimeout are consumed by the framework (with
 	// PodOverrides precedence); only the Kafka defaults remain product-side, applied when
@@ -101,6 +133,20 @@ func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 	}
 
 	return nil
+}
+
+// podOverrideContainer returns the user's podOverrides entry for the named container (an
+// empty container when there is none), so customization can yield to user-set fields.
+func podOverrideContainer(buildCtx *reconciler.RoleGroupBuildContext, name string) corev1.Container {
+	if buildCtx.MergedConfig == nil || buildCtx.MergedConfig.PodOverrides == nil {
+		return corev1.Container{}
+	}
+	for _, c := range buildCtx.MergedConfig.PodOverrides.Spec.Containers {
+		if c.Name == name {
+			return c
+		}
+	}
+	return corev1.Container{}
 }
 
 // getMainContainerArgs returns the shell script the main container runs: copy the

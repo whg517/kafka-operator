@@ -451,6 +451,8 @@ spec:
                     type: string
                   zookeeperConfigMapName:
                     type: string
+                required:
+                - zookeeperConfigMapName
                 type: object
               clusterOperation:
                 description: ClusterOperationSpec defines the desired state of ClusterOperation

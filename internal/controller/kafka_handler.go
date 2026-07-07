@@ -48,11 +48,10 @@ func parseSecretLifetime(s string) (time.Duration, error) {
 // +kubebuilder:rbac:groups=kafka.kubedoop.dev,resources=kafkaclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kafka.kubedoop.dev,resources=kafkaclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=configmaps;services;serviceaccounts;secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=listeners.kubedoop.dev,resources=listeners,verbs=get;list;watch;create;update;patch;delete
 
 // LabelDomain is the product domain used for identity (selector) labels:
@@ -155,12 +154,17 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 	listenerProvisioner := h.buildListenerProvisioner(brokerCfg, bootstrapListenerName)
 	image := h.resolveImage(cr)
 
-	// Configure the per-CR base inputs.
+	// Configure the per-CR base inputs (each field is set unconditionally on every call:
+	// the handler is shared across CRs, so a skipped set would leak the previous CR's value).
 	h.Image = image
+	h.ImagePullPolicy = kafkav1alpha1.ImagePullPolicy
+	if cr.Spec.Image != nil && cr.Spec.Image.PullPolicy != nil {
+		h.ImagePullPolicy = *cr.Spec.Image.PullPolicy
+	}
 	h.SetRoleContainerPorts(kafkav1alpha1.BrokerRoleName, KafkaContainerPorts(kafkaSecurity))
 	h.SetRoleServicePorts(kafkav1alpha1.BrokerRoleName, kafkaServicePorts(kafkaSecurity))
-	// Ensure the data PVC is built even when the user omits resources.storage.
-	h.ensureStorageDefault(buildCtx)
+	// Ensure the Kafka resource defaults (storage/CPU/memory) for anything the user omitted.
+	h.ensureResourceDefaults(buildCtx)
 
 	// The framework's GenericReconciler already constructs the Vector sidecar pointed at
 	// this role group's ConfigMap; we only need to set the product image on the registered

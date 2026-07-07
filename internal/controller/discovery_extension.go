@@ -8,6 +8,7 @@ import (
 	listenerv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/listeners/v1alpha1"
 	opcommon "github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -86,10 +87,25 @@ func (e *DiscoveryExtension) ensureDiscoveryConfigMaps(ctx context.Context, c cl
 		return fmt.Errorf("failed to list bootstrap listeners: %w", err)
 	}
 
-	bootstrapServers, err := makeBootstrapServers(listenerList, portName)
-	if err != nil {
-		return err
+	// Eagerly delete bootstrap Listeners whose role group no longer exists in the spec:
+	// the framework cleaner cannot discover ExtraResources (operator-go#516), and a stale
+	// Listener would keep serving dead bootstrap addresses through discovery.
+	expected := expectedBootstrapListeners(cr)
+	kept := listenerList.Items[:0]
+	for i := range listenerList.Items {
+		l := &listenerList.Items[i]
+		if _, ok := expected[l.Name]; ok {
+			kept = append(kept, *l)
+			continue
+		}
+		if err := c.Delete(ctx, l); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete orphaned bootstrap listener %s/%s: %w", l.Namespace, l.Name, err)
+		}
+		log.FromContext(ctx).Info("deleted orphaned bootstrap listener", "listener", l.Name)
 	}
+	listenerList.Items = kept
+
+	bootstrapServers := makeBootstrapServers(ctx, listenerList, portName)
 
 	// The framework helper owns the ensure semantics (CreateOrUpdate + controller owner
 	// reference + canonical labels); the product only computes the data.
@@ -110,18 +126,36 @@ func (e *DiscoveryExtension) ensureDiscoveryConfigMaps(ctx context.Context, c cl
 	return nil
 }
 
+// expectedBootstrapListeners returns the set of bootstrap Listener names the current spec
+// produces (one per broker role group).
+func expectedBootstrapListeners(cr *kafkav1alpha1.KafkaCluster) map[string]struct{} {
+	expected := map[string]struct{}{}
+	if cr.Spec.Brokers == nil {
+		return expected
+	}
+	for group := range cr.Spec.Brokers.RoleGroups {
+		name := BootstrapListenerName(reconciler.RoleGroupResourceName(cr.Name, kafkav1alpha1.BrokerRoleName, group))
+		expected[name] = struct{}{}
+	}
+	return expected
+}
+
 // makeBootstrapServers renders the comma-separated host:port bootstrap list from the
-// listeners' ingress addresses.
-func makeBootstrapServers(listenerList *listenerv1alpha1.ListenerList, portName string) (string, error) {
+// listeners' ingress addresses. Listeners missing the requested port name are skipped (and
+// logged) instead of failing: one stale Listener (e.g. created before a TLS toggle renamed
+// the port) must not wedge the whole cluster's reconciliation.
+func makeBootstrapServers(ctx context.Context, listenerList *listenerv1alpha1.ListenerList, portName string) string {
 	var servers []string
 	for _, l := range listenerList.Items {
 		for _, addr := range l.Status.IngressAddresses {
 			port, ok := addr.Ports[portName]
 			if !ok {
-				return "", fmt.Errorf("listener %q has no port named %q", l.Name, portName)
+				log.FromContext(ctx).Info("skipping bootstrap listener without the expected port",
+					"listener", l.Name, "port", portName)
+				continue
 			}
 			servers = append(servers, fmt.Sprintf("%s:%d", addr.Address, port))
 		}
 	}
-	return strings.Join(servers, ","), nil
+	return strings.Join(servers, ",")
 }
