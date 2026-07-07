@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -90,20 +89,14 @@ func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 	main.ReadinessProbe = h.getReadinessProbe(kafkaSecurity)
 	main.LivenessProbe = h.getLivenessProbe(kafkaSecurity)
 
-	// Affinity: the generic RoleGroupConfigSpec carries it as a RawExtension the framework
-	// does not consume; apply the user's affinity, else the Kafka default (soft
-	// anti-affinity between brokers of the same cluster).
-	affinity, err := resolveAffinity(buildCtx, cr.Name)
-	if err != nil {
-		return err
-	}
+	// Config affinity and gracefulShutdownTimeout are consumed by the framework (with
+	// PodOverrides precedence); only the Kafka defaults remain product-side, applied when
+	// neither config nor overrides set a value.
 	if podSpec.Affinity == nil {
-		podSpec.Affinity = affinity
+		podSpec.Affinity = defaultAffinity(cr.Name)
 	}
-
-	// Termination grace from gracefulShutdownTimeout (default 30s).
 	if podSpec.TerminationGracePeriodSeconds == nil {
-		seconds := int64(resolveGracefulShutdownTimeout(buildCtx).Seconds())
+		seconds := int64(defaultGracefulShutdownTimeout.Seconds())
 		podSpec.TerminationGracePeriodSeconds = &seconds
 	}
 
@@ -259,20 +252,6 @@ func (h *KafkaRoleGroupHandler) getReadinessProbe(kafkaSecurity *security.KafkaS
 	}
 }
 
-// resolveAffinity returns the user-provided affinity from the role group config
-// (RawExtension) when set, else the Kafka default: soft anti-affinity between brokers of
-// the same cluster.
-func resolveAffinity(buildCtx *reconciler.RoleGroupBuildContext, clusterName string) (*corev1.Affinity, error) {
-	if cfg := buildCtx.RoleGroupSpec.GetConfig(); cfg != nil && cfg.Affinity != nil && len(cfg.Affinity.Raw) > 0 {
-		affinity := &corev1.Affinity{}
-		if err := json.Unmarshal(cfg.Affinity.Raw, affinity); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal affinity: %w", err)
-		}
-		return affinity, nil
-	}
-	return defaultAffinity(clusterName), nil
-}
-
 // defaultAffinity is the Kafka default: prefer spreading brokers of the same cluster
 // across nodes.
 func defaultAffinity(clusterName string) *corev1.Affinity {
@@ -294,18 +273,4 @@ func defaultAffinity(clusterName string) *corev1.Affinity {
 			},
 		},
 	}
-}
-
-// resolveGracefulShutdownTimeout parses gracefulShutdownTimeout from the role group
-// config, defaulting to 30s.
-func resolveGracefulShutdownTimeout(buildCtx *reconciler.RoleGroupBuildContext) time.Duration {
-	cfg := buildCtx.RoleGroupSpec.GetConfig()
-	if cfg == nil || cfg.GracefulShutdownTimeout == "" {
-		return defaultGracefulShutdownTimeout
-	}
-	d, err := time.ParseDuration(cfg.GracefulShutdownTimeout)
-	if err != nil || d <= 0 {
-		return defaultGracefulShutdownTimeout
-	}
-	return d
 }

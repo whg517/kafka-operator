@@ -14,7 +14,7 @@ spec:
     - name: metrics
       port: 9606
       protocol: TCP
-      targetPort: 9606
+      targetPort: metrics
   selector:
     kafka.kubedoop.dev/cluster: kafkacluster-sample
     kafka.kubedoop.dev/role: broker

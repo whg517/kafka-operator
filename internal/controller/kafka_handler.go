@@ -70,8 +70,8 @@ const (
 // It drives both BaseRoleGroupHandler.LoggingContainers (the framework's shared Vector log
 // volume producer/consumer wiring) and the log4j.properties + vector.yaml rendered into the
 // role group ConfigMap. Kafka 3.x logs via reload4j, so the log4j 1.x generator is used.
-// The framework derives the rolling file name the Vector sidecar globs from the container
-// name (<container>.stdout.log = "kafka.stdout.log").
+// The framework derives the rolling file path from the container name and framework
+// ("/kubedoop/log/kafka/kafka.log4j.xml", XMLLayout), which the Vector sidecar edge-parses.
 var kafkaServerLogging = productlogging.ContainerLogging{
 	Container: kafkav1alpha1.KafkaContainerName,
 	Framework: productlogging.LoggingFrameworkLog4j,
@@ -193,7 +193,10 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 		buildCtx.ClusterNamespace,
 		kafkav1alpha1.MetricsPort,
 		res.StatefulSet.Labels,
-	).WithSelector(h.SelectorLabels(buildCtx)).Build()
+	).WithSelector(h.SelectorLabels(buildCtx)).
+		// Target the container port by name so renumbering never breaks the Service
+		// (pre-framework parity).
+		WithTargetPortName(kafkav1alpha1.MetricsPortName).Build()
 
 	// The per-role-group bootstrap Listener gives clients a stable bootstrap address. It is
 	// shipped as an extra resource so the framework applies it BEFORE the StatefulSet: the
@@ -273,7 +276,10 @@ func (h *KafkaRoleGroupHandler) buildListenerProvisioner(
 ) *listener.ListenerProvisioner {
 	return listener.NewProvisioner().RegisterVolume(
 		listener.NewVolume(kafkav1alpha1.ListenerBrokerVolumeName, listener.ListenerClass(brokerCfg.BrokerListenerClass)),
-		listener.NewVolume(kafkav1alpha1.ListenerBootstrapVolumeName, listener.ListenerClass(brokerCfg.BootstrapListenerClass)).
+		// The bootstrap volume references the pre-created bootstrap Listener by name; the
+		// class lives on the Listener CR itself (the registration omits the class
+		// annotation entirely for by-name references).
+		listener.NewVolume(kafkav1alpha1.ListenerBootstrapVolumeName, "").
 			WithListenerName(bootstrapListenerName),
 	)
 }

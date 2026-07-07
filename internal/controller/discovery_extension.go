@@ -8,11 +8,8 @@ import (
 	listenerv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/listeners/v1alpha1"
 	opcommon "github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
@@ -94,25 +91,16 @@ func (e *DiscoveryExtension) ensureDiscoveryConfigMaps(ctx context.Context, c cl
 		return err
 	}
 
+	// The framework helper owns the ensure semantics (CreateOrUpdate + controller owner
+	// reference + canonical labels); the product only computes the data.
 	for _, name := range []string{cr.Name, cr.Name + "-nodeport"} {
-		cm := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: cr.Namespace,
-			},
-		}
-		_, err := controllerutil.CreateOrUpdate(ctx, c, cm, func() error {
-			cm.Labels = map[string]string{
-				LabelKubernetesName:                     kafkav1alpha1.DefaultProductName,
-				LabelKubernetesInstance:                 cr.Name,
+		if err := reconciler.EnsureDiscoveryConfigMap(ctx, c, e.scheme, cr, name,
+			map[string]string{KafkaDiscoveryKey: bootstrapServers},
+			reconciler.WithDiscoveryProductName(kafkav1alpha1.DefaultProductName),
+			reconciler.WithDiscoveryExtraLabels(map[string]string{
 				reconciler.ClusterLabelKey(LabelDomain): cr.Name,
-			}
-			cm.Data = map[string]string{
-				KafkaDiscoveryKey: bootstrapServers,
-			}
-			return controllerutil.SetControllerReference(cr, cm, e.scheme)
-		})
-		if err != nil {
+			}),
+		); err != nil {
 			return fmt.Errorf("failed to ensure discovery configmap %s/%s: %w", cr.Namespace, name, err)
 		}
 	}
