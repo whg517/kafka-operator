@@ -169,11 +169,16 @@ func main() {
 			Scheme: mgr.GetScheme(),
 			// operator-go's Recorder field is the (deprecated) record.EventRecorder; the
 			// replacement GetEventRecorder returns the incompatible events.EventRecorder.
-			Recorder:           mgr.GetEventRecorderFor("kafka-cluster-controller"), //nolint:staticcheck
-			RoleGroupHandler:   kafkaHandler,
-			ServiceAccountName: kafkav1alpha1.DefaultProductName,
-			ProductConfig:      controller.ComputeProductConfig,
-			Prototype:          &kafkav1alpha1.KafkaCluster{},
+			Recorder:         mgr.GetEventRecorderFor("kafka-cluster-controller"), //nolint:staticcheck
+			RoleGroupHandler: kafkaHandler,
+			// Per-cluster ServiceAccount: a shared static name breaks two KafkaClusters in
+			// one namespace (AlreadyOwnedError; deleting one cluster would GC the SA out
+			// from under the other's pods).
+			ServiceAccountNameFunc: func(cr *kafkav1alpha1.KafkaCluster) string {
+				return kafkav1alpha1.DefaultProductName + "-" + cr.GetName()
+			},
+			ProductConfig: controller.ComputeProductConfig,
+			Prototype:     &kafkav1alpha1.KafkaCluster{},
 		})
 	if err != nil {
 		setupLog.Error(err, "unable to create GenericReconciler", "controller", "KafkaCluster")

@@ -12,7 +12,7 @@ fields changed, so an in-place operator upgrade cannot update an existing Statef
 | `spec.volumeClaimTemplates` | `listener-bootstrap` + `data` | `data` only |
 
 The role-group Service also changes from headless to ClusterIP (immutable `clusterIP`), and
-the per-cluster ServiceAccount is replaced by the operator-managed one.
+the per-cluster ServiceAccount is renamed from `<cluster>` to `kafka-<cluster>`.
 
 ## Migration steps (per KafkaCluster, brokers restart once)
 
