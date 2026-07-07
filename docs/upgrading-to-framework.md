@@ -6,7 +6,7 @@ StatefulSet/ConfigMap/Services, `data-*` for the topic-data PVCs, `<cluster>` /
 fields changed, so an in-place operator upgrade cannot update an existing StatefulSet:
 
 | Field | pre-framework | framework |
-|-------|---------------|-----------|
+| ------- | --------------- | ----------- |
 | `spec.selector` | descriptive `app.kubernetes.io/*` labels | `kafka.kubedoop.dev/{cluster,role,role-group}` identity labels |
 | `spec.serviceName` | `<cluster>-broker-<group>` | `<cluster>-broker-<group>-headless` |
 | `spec.volumeClaimTemplates` | `listener-bootstrap` + `data` | `data` only |
