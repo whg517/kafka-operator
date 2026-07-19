@@ -167,6 +167,3 @@ target
 # ignore any local file
 **/*local*
 .worktree/
-
-# generated chainsaw values
-test/e2e/.values.yaml
