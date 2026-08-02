@@ -20,8 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-
-	"github.com/zncdatadev/kafka-operator/internal/util/version"
 )
 
 const (
@@ -129,27 +127,10 @@ func (s *KafkaClusterSpec) ToGenericSpec() *commonsv1alpha1.GenericClusterSpec {
 		ClusterOperation: s.ClusterOperation,
 	}
 
-	// The framework resolves the concrete image from this spec via the handler's
-	// ProductName; kafka has no defaulting webhook, so the repo/version fallbacks are
-	// normalized here instead (deterministic, recomputed every reconcile).
-	image := commonsv1alpha1.ImageSpec{}
-	if s.Image != nil {
-		image = *s.Image
-	}
-	if image.Custom == "" {
-		if image.Repo == "" {
-			image.Repo = DefaultRepository
-		}
-		if image.ProductVersion == "" {
-			image.ProductVersion = DefaultProductVersion
-		}
-		if image.KubedoopVersion == "" {
-			// Dev operator -> dev image: the co-released product image carries the
-			// operator stack version ("<productVersion>-kubedoop<stack>").
-			image.KubedoopVersion = version.BuildVersion
-		}
-	}
-	result.Image = &image
+	// spec.image passes through untouched: the framework folds it over the handler's
+	// ImageDefaults per field at reconcile time (user first), so the repo/version
+	// fallbacks live on the handler instead of being normalized into the spec here.
+	result.Image = s.Image
 
 	if s.Brokers == nil {
 		return result

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/builder"
 	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
@@ -19,6 +19,7 @@ import (
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
+	"github.com/zncdatadev/kafka-operator/internal/util/version"
 )
 
 var logger = ctrl.Log.WithName("kafka-handler")
@@ -87,13 +88,6 @@ var kafkaServerLogging = productlogging.ContainerLogging{
 // framework applies it before the StatefulSet (pods mount a CSI volume referencing it).
 type KafkaRoleGroupHandler struct {
 	reconciler.BaseRoleGroupHandler[*kafkav1alpha1.KafkaCluster]
-
-	// mu serializes BuildResources: the per-CR inputs (Image, RoleContainerPorts,
-	// RoleServicePorts) are handler-wide fields on a shared instance, so concurrent
-	// reconciles (if MaxConcurrentReconciles is ever raised) would race and leak
-	// configuration between clusters. Serializing keeps the set-then-build sequence
-	// atomic per reconcile.
-	mu sync.Mutex
 }
 
 var _ reconciler.RoleGroupHandler[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroupHandler{}
@@ -103,10 +97,18 @@ var _ reconciler.RoleGroupHandler[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroup
 func NewKafkaRoleGroupHandler(scheme *runtime.Scheme) *KafkaRoleGroupHandler {
 	h := &KafkaRoleGroupHandler{}
 	h.Scheme = scheme
-	// ProductName drives both the framework's spec.image resolution
-	// ("{repo}/kafka:{version}-kubedoop{v}") and the app.kubernetes.io/name label in the
-	// recommended label set.
+	// ProductName supplies the app.kubernetes.io/name label value and the repository path
+	// segment of resolved images; ImageDefaults fills whatever spec.image leaves empty,
+	// per field and user-first, evaluated every reconcile
+	// ("{repo}/kafka:{productVersion}-kubedoop{operator build version}").
 	h.ProductName = kafkav1alpha1.DefaultProductName
+	h.ImageDefaults = commonsv1alpha1.ImageSpec{
+		Repo:           kafkav1alpha1.DefaultRepository,
+		ProductVersion: kafkav1alpha1.DefaultProductVersion,
+		// Dev operator -> dev image: the co-released product image carries the operator
+		// stack version.
+		KubedoopVersion: version.BuildVersion,
+	}
 	// Brokers must resolve each other before readiness, and topic data must be persistent.
 	h.PublishNotReadyAddresses = true
 	h.StorageMountPath = KubedoopDataDir
@@ -128,9 +130,6 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 	cr *kafkav1alpha1.KafkaCluster,
 	buildCtx *reconciler.RoleGroupBuildContext,
 ) (*reconciler.RoleGroupResources, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if buildCtx.RoleName != kafkav1alpha1.BrokerRoleName {
 		return nil, fmt.Errorf("unsupported role: %s", buildCtx.RoleName)
 	}
@@ -145,12 +144,11 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 	bootstrapListenerName := BootstrapListenerName(buildCtx.ResourceName)
 	listenerProvisioner := h.buildListenerProvisioner(brokerCfg, bootstrapListenerName)
 
-	// The framework resolves the container image and pull policy from spec.image via the
-	// handler's ProductName, and propagates the product image to the injected sidecars —
-	// no per-CR image plumbing remains product-side. Ports are still handler-wide maps
-	// (see the mutex), set unconditionally on every call so values never leak between CRs.
-	h.SetRoleContainerPorts(kafkav1alpha1.BrokerRoleName, KafkaContainerPorts(kafkaSecurity))
-	h.SetRoleServicePorts(kafkav1alpha1.BrokerRoleName, kafkaServicePorts(kafkaSecurity))
+	// Ports depend on the CR's security config (a TLS toggle moves the client port), so
+	// they go on the per-call build context — the handler stays read-only in this method
+	// and shared-instance reconciles cannot leak configuration between clusters (#525).
+	buildCtx.ContainerPorts = KafkaContainerPorts(kafkaSecurity)
+	buildCtx.ServicePorts = kafkaServicePorts(kafkaSecurity)
 	// Ensure the Kafka resource defaults (storage/CPU/memory) for anything the user omitted.
 	h.ensureResourceDefaults(buildCtx)
 
