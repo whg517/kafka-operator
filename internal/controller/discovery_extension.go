@@ -8,7 +8,6 @@ import (
 	listenerv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/listeners/v1alpha1"
 	opcommon "github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -32,7 +31,7 @@ type DiscoveryExtension struct {
 	scheme *runtime.Scheme
 }
 
-var _ opcommon.ClusterExtension[opcommon.ClusterInterface] = &DiscoveryExtension{}
+var _ opcommon.ClusterExtension[*kafkav1alpha1.KafkaCluster] = &DiscoveryExtension{}
 
 // NewDiscoveryExtension creates a new DiscoveryExtension.
 func NewDiscoveryExtension(scheme *runtime.Scheme) *DiscoveryExtension {
@@ -43,23 +42,18 @@ func NewDiscoveryExtension(scheme *runtime.Scheme) *DiscoveryExtension {
 func (e *DiscoveryExtension) Name() string { return "kafka-discovery" }
 
 // PreReconcile is a no-op.
-func (e *DiscoveryExtension) PreReconcile(_ context.Context, _ client.Client, _ opcommon.ClusterInterface) error {
+func (e *DiscoveryExtension) PreReconcile(_ context.Context, _ client.Client, _ *kafkav1alpha1.KafkaCluster) error {
 	return nil
 }
 
 // PostReconcile aggregates the bootstrap listener addresses and writes the discovery
-// ConfigMaps.
-func (e *DiscoveryExtension) PostReconcile(ctx context.Context, c client.Client, cr opcommon.ClusterInterface) error {
-	kafkaCluster, ok := cr.(*kafkav1alpha1.KafkaCluster)
-	if !ok {
-		// Not a KafkaCluster; the global registry is shared, so just skip.
-		return nil
-	}
-	return e.ensureDiscoveryConfigMaps(ctx, c, kafkaCluster)
+// ConfigMaps. The registry is per-CR-type (#539), so cr is already the concrete type.
+func (e *DiscoveryExtension) PostReconcile(ctx context.Context, c client.Client, cr *kafkav1alpha1.KafkaCluster) error {
+	return e.ensureDiscoveryConfigMaps(ctx, c, cr)
 }
 
 // OnReconcileError is a no-op.
-func (e *DiscoveryExtension) OnReconcileError(_ context.Context, _ client.Client, _ opcommon.ClusterInterface, _ error) error {
+func (e *DiscoveryExtension) OnReconcileError(_ context.Context, _ client.Client, _ *kafkav1alpha1.KafkaCluster, _ error) error {
 	return nil
 }
 
@@ -87,21 +81,17 @@ func (e *DiscoveryExtension) ensureDiscoveryConfigMaps(ctx context.Context, c cl
 		return fmt.Errorf("failed to list bootstrap listeners: %w", err)
 	}
 
-	// Eagerly delete bootstrap Listeners whose role group no longer exists in the spec:
-	// the framework cleaner cannot discover ExtraResources (operator-go#516), and a stale
-	// Listener would keep serving dead bootstrap addresses through discovery.
+	// Orphaned bootstrap Listeners of removed role groups are reclaimed by the framework
+	// cleaner (the Listener kind is registered via SetupWithManagerOptions.ExtraOwns and
+	// carries the role group's identity labels). Discovery only filters the aggregation to
+	// the role groups the current spec declares, so a not-yet-reclaimed orphan never leaks
+	// dead bootstrap addresses to clients.
 	expected := expectedBootstrapListeners(cr)
 	kept := listenerList.Items[:0]
 	for i := range listenerList.Items {
-		l := &listenerList.Items[i]
-		if _, ok := expected[l.Name]; ok {
-			kept = append(kept, *l)
-			continue
+		if _, ok := expected[listenerList.Items[i].Name]; ok {
+			kept = append(kept, listenerList.Items[i])
 		}
-		if err := c.Delete(ctx, l); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete orphaned bootstrap listener %s/%s: %w", l.Namespace, l.Name, err)
-		}
-		log.FromContext(ctx).Info("deleted orphaned bootstrap listener", "listener", l.Name)
 	}
 	listenerList.Items = kept
 

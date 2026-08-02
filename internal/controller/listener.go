@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
@@ -120,7 +121,7 @@ func NewBootstrapListener(
 		Spec: listenerv1alpha1.ListenerSpec{
 			ClassName:                listenerClass,
 			Ports:                    ports,
-			PublishNotReadyAddresses: true,
+			PublishNotReadyAddresses: ptr.To(true),
 		},
 	}
 }

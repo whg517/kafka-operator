@@ -17,12 +17,17 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 
 	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
-	"github.com/zncdatadev/operator-go/pkg/common"
+
+	"github.com/zncdatadev/kafka-operator/internal/util/version"
+)
+
+const (
+	DefaultRepository     = "quay.io/zncdatadev"
+	DefaultProductVersion = "3.9.0"
+	DefaultProductName    = "kafka"
 )
 
 const (
@@ -61,8 +66,6 @@ const (
 )
 
 const (
-	ImagePullPolicy = corev1.PullIfNotPresent
-
 	// ListenerBrokerVolumeName is the per-broker listener CSI volume (mounted at
 	// /kubedoop/listener/listener-broker). Its name is referenced by the secret-operator
 	// scope annotation "listener-volume=listener-broker" on the TLS/Kerberos volumes.
@@ -108,31 +111,6 @@ func (k *KafkaCluster) GetStatus() *commonsv1alpha1.GenericClusterStatus {
 	return &k.Status.GenericClusterStatus
 }
 
-// SetStatus updates the cluster status.
-func (k *KafkaCluster) SetStatus(status *commonsv1alpha1.GenericClusterStatus) {
-	k.Status.GenericClusterStatus = *status
-}
-
-// GetObjectMeta returns the object metadata.
-func (k *KafkaCluster) GetObjectMeta() *metav1.ObjectMeta {
-	return &k.ObjectMeta
-}
-
-// GetScheme returns the cached runtime scheme.
-func (k *KafkaCluster) GetScheme() *runtime.Scheme {
-	return cachedScheme
-}
-
-// DeepCopyCluster creates a deep copy of the cluster.
-func (k *KafkaCluster) DeepCopyCluster() common.ClusterInterface {
-	return k.DeepCopy()
-}
-
-// GetRuntimeObject returns the underlying runtime.Object.
-func (k *KafkaCluster) GetRuntimeObject() runtime.Object {
-	return k
-}
-
 // VectorAggregatorConfigMapName implements reconciler.VectorAggregatorProvider so the framework
 // owns vector.yaml generation: when a role group enables the Vector agent, the GenericReconciler
 // resolves the aggregator address from this ConfigMap and renders vector.yaml into the role group
@@ -151,14 +129,27 @@ func (s *KafkaClusterSpec) ToGenericSpec() *commonsv1alpha1.GenericClusterSpec {
 		ClusterOperation: s.ClusterOperation,
 	}
 
+	// The framework resolves the concrete image from this spec via the handler's
+	// ProductName; kafka has no defaulting webhook, so the repo/version fallbacks are
+	// normalized here instead (deterministic, recomputed every reconcile).
+	image := commonsv1alpha1.ImageSpec{}
 	if s.Image != nil {
-		result.Image = &commonsv1alpha1.ImageSpec{
-			Custom:          s.Image.Custom,
-			Repo:            s.Image.Repo,
-			ProductVersion:  s.Image.ProductVersion,
-			KubedoopVersion: s.Image.KubedoopVersion,
+		image = *s.Image
+	}
+	if image.Custom == "" {
+		if image.Repo == "" {
+			image.Repo = DefaultRepository
+		}
+		if image.ProductVersion == "" {
+			image.ProductVersion = DefaultProductVersion
+		}
+		if image.KubedoopVersion == "" {
+			// Dev operator -> dev image: the co-released product image carries the
+			// operator stack version ("<productVersion>-kubedoop<stack>").
+			image.KubedoopVersion = version.BuildVersion
 		}
 	}
+	result.Image = &image
 
 	if s.Brokers == nil {
 		return result
@@ -228,7 +219,7 @@ type KafkaClusterList struct {
 type KafkaClusterSpec struct {
 	// +kubebuilder:validation:Optional
 	// +default:value={"repo": "quay.io/zncdatadev", "pullPolicy": "IfNotPresent"}
-	Image *ImageSpec `json:"image,omitempty"`
+	Image *commonsv1alpha1.ImageSpec `json:"image,omitempty"`
 
 	// +kubebuilder:validation:Required
 	ClusterConfig *ClusterConfigSpec `json:"clusterConfig,omitempty"`
@@ -341,11 +332,6 @@ type BrokersConfigSpec struct {
 	RequestedSecretLifeTime string `json:"requestedSecretLifeTime,omitempty"`
 }
 
-// cachedScheme is initialized once and reused across all reconcile calls.
-var cachedScheme *runtime.Scheme
-
 func init() {
 	SchemeBuilder.Register(&KafkaCluster{}, &KafkaClusterList{})
-	cachedScheme = runtime.NewScheme()
-	_ = SchemeBuilder.AddToScheme(cachedScheme)
 }

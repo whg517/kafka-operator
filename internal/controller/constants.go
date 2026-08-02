@@ -19,11 +19,9 @@ const (
 	ZookeeperDiscoveryKey = "ZOOKEEPER"
 )
 
-// Descriptive Kubernetes label keys shared by product-built resources.
-const (
-	LabelKubernetesName     = "app.kubernetes.io/name"
-	LabelKubernetesInstance = "app.kubernetes.io/instance"
-)
+// LabelKubernetesInstance is the descriptive instance label key used by the default
+// broker anti-affinity selector.
+const LabelKubernetesInstance = "app.kubernetes.io/instance"
 
 const (
 	EnvJvmArgs              = "EXTRA_ARGS"

@@ -104,7 +104,7 @@ var _ = Describe("Bootstrap listener CR", func() {
 		Expect(l.Labels).To(HaveKeyWithValue(LabelListenerBootstrap, LabelValueTrue))
 		Expect(l.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "kafkacluster"))
 		Expect(l.Spec.ClassName).To(Equal("external-stable"))
-		Expect(l.Spec.PublishNotReadyAddresses).To(BeTrue())
+		Expect(l.Spec.PublishNotReadyAddresses).To(HaveValue(BeTrue()))
 		Expect(l.Spec.Ports).To(HaveLen(2))
 		Expect(l.Spec.Ports[0].Name).To(Equal("kafka"))
 		Expect(l.Spec.Ports[0].Port).To(Equal(int32(9092)))

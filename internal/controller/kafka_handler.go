@@ -20,7 +20,6 @@ import (
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
-	"github.com/zncdatadev/kafka-operator/internal/util/version"
 )
 
 var logger = ctrl.Log.WithName("kafka-handler")
@@ -105,16 +104,13 @@ var _ reconciler.RoleGroupHandler[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroup
 func NewKafkaRoleGroupHandler(scheme *runtime.Scheme) *KafkaRoleGroupHandler {
 	h := &KafkaRoleGroupHandler{}
 	h.Scheme = scheme
-	h.ImagePullPolicy = kafkav1alpha1.ImagePullPolicy
 	h.RoleImages = map[string]string{}
 	h.RoleContainerPorts = map[string][]corev1.ContainerPort{}
 	h.RoleServicePorts = map[string][]corev1.ServicePort{}
-	// app.kubernetes.io/name identifies the product on every resource/pod; the framework's
-	// canonical labels alone (instance + component + managed-by) are not product-unique.
-	h.ExtraLabels = map[string]string{
-		LabelKubernetesName: kafkav1alpha1.DefaultProductName,
-	}
-	h.ExtraAnnotations = map[string]string{}
+	// ProductName drives both the framework's spec.image resolution
+	// ("{repo}/kafka:{version}-kubedoop{v}") and the app.kubernetes.io/name label in the
+	// recommended label set.
+	h.ProductName = kafkav1alpha1.DefaultProductName
 	// Brokers must resolve each other before readiness, and topic data must be persistent.
 	h.PublishNotReadyAddresses = true
 	h.StorageMountPath = KubedoopDataDir
@@ -152,26 +148,15 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 	secretProvisioner := h.buildSecretProvisioner(kafkaSecurity, brokerCfg)
 	bootstrapListenerName := BootstrapListenerName(buildCtx.ResourceName)
 	listenerProvisioner := h.buildListenerProvisioner(brokerCfg, bootstrapListenerName)
-	image := h.resolveImage(cr)
 
-	// Configure the per-CR base inputs (each field is set unconditionally on every call:
-	// the handler is shared across CRs, so a skipped set would leak the previous CR's value).
-	h.Image = image
-	h.ImagePullPolicy = kafkav1alpha1.ImagePullPolicy
-	if cr.Spec.Image != nil && cr.Spec.Image.PullPolicy != nil {
-		h.ImagePullPolicy = *cr.Spec.Image.PullPolicy
-	}
+	// The framework resolves the container image and pull policy from spec.image via the
+	// handler's ProductName, and propagates the product image to the injected sidecars —
+	// no per-CR image plumbing remains product-side. Ports are still handler-wide maps
+	// (see the mutex), set unconditionally on every call so values never leak between CRs.
 	h.SetRoleContainerPorts(kafkav1alpha1.BrokerRoleName, KafkaContainerPorts(kafkaSecurity))
 	h.SetRoleServicePorts(kafkav1alpha1.BrokerRoleName, kafkaServicePorts(kafkaSecurity))
 	// Ensure the Kafka resource defaults (storage/CPU/memory) for anything the user omitted.
 	h.ensureResourceDefaults(buildCtx)
-
-	// The framework's GenericReconciler already constructs the Vector sidecar pointed at
-	// this role group's ConfigMap; we only need to set the product image on the registered
-	// sidecars.
-	if err := buildCtx.SidecarManager.SetProductImage(image, h.ImagePullPolicy); err != nil {
-		return nil, fmt.Errorf("failed to set product image on sidecars: %w", err)
-	}
 
 	// Hand the CSI volumes (TLS keystores, Kerberos keytab, listener addresses) to the
 	// framework so base.BuildResources() injects them into the pod and the main container.
@@ -308,34 +293,6 @@ func (h *KafkaRoleGroupHandler) buildBootstrapListener(
 	kafkaSecurity *security.KafkaSecurity,
 ) ctrlclient.Object {
 	return NewBootstrapListener(name, buildCtx.ClusterNamespace, labels, brokerCfg.BootstrapListenerClass, kafkaSecurity)
-}
-
-// resolveImage constructs the container image string from the CR spec. Kubedoop product
-// images are tagged "<productVersion>-kubedoop<kubedoopVersion>"; when the CR does not pin
-// a kubedoop version, the operator's own build version is used (dev operator -> dev image),
-// matching the pre-framework behavior.
-func (h *KafkaRoleGroupHandler) resolveImage(cr *kafkav1alpha1.KafkaCluster) string {
-	repo := kafkav1alpha1.DefaultRepository
-	productVersion := kafkav1alpha1.DefaultProductVersion
-	kubedoopVersion := version.BuildVersion
-
-	if img := cr.Spec.Image; img != nil {
-		if img.Custom != "" {
-			return img.Custom
-		}
-		if img.Repo != "" {
-			repo = img.Repo
-		}
-		if img.ProductVersion != "" {
-			productVersion = img.ProductVersion
-		}
-		if img.KubedoopVersion != "" {
-			kubedoopVersion = img.KubedoopVersion
-		}
-	}
-
-	return fmt.Sprintf("%s/%s:%s-kubedoop%s",
-		repo, kafkav1alpha1.DefaultProductName, productVersion, kubedoopVersion)
 }
 
 // brokerConfig carries the Kafka-specific role group settings that live outside the

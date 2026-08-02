@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
@@ -54,19 +55,19 @@ func (h *KafkaRoleGroupHandler) ensureResourceDefaults(buildCtx *reconciler.Role
 	}
 	switch {
 	case cfg.Resources.Storage == nil:
-		cfg.Resources.Storage = &commonsv1alpha1.StorageResource{Capacity: resource.MustParse(defaultStorageCapacity)}
-	case cfg.Resources.Storage.Capacity.IsZero():
-		cfg.Resources.Storage.Capacity = resource.MustParse(defaultStorageCapacity)
+		cfg.Resources.Storage = &commonsv1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse(defaultStorageCapacity))}
+	case cfg.Resources.Storage.Capacity == nil || cfg.Resources.Storage.Capacity.IsZero():
+		cfg.Resources.Storage.Capacity = ptr.To(resource.MustParse(defaultStorageCapacity))
 	}
 	if cfg.Resources.CPU == nil {
 		cfg.Resources.CPU = &commonsv1alpha1.CPUResource{
-			Min: resource.MustParse(defaultCPURequest),
-			Max: resource.MustParse(defaultCPULimit),
+			Min: ptr.To(resource.MustParse(defaultCPURequest)),
+			Max: ptr.To(resource.MustParse(defaultCPULimit)),
 		}
 	}
 	if cfg.Resources.Memory == nil {
 		cfg.Resources.Memory = &commonsv1alpha1.MemoryResource{
-			Limit: resource.MustParse(defaultMemoryLimit),
+			Limit: ptr.To(resource.MustParse(defaultMemoryLimit)),
 		}
 	}
 }
@@ -90,9 +91,6 @@ func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 	if len(podSpec.Containers) == 0 {
 		return fmt.Errorf("base handler produced no main container")
 	}
-
-	// Brokers are independent; there is no need for ordered rolling starts.
-	sts.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
 
 	// The framework renamed the primary container to "kafka"
 	// (BaseRoleGroupHandler.MainContainerName) and gave it the framework-managed
@@ -259,8 +257,9 @@ func (h *KafkaRoleGroupHandler) getEnvVars(
 
 	// Heap limit from memory resources (80% of the limit).
 	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
-	if roleGroupConfig != nil && roleGroupConfig.Resources != nil && roleGroupConfig.Resources.Memory != nil {
-		memoryLimit := roleGroupConfig.Resources.Memory.Limit
+	if roleGroupConfig != nil && roleGroupConfig.Resources != nil &&
+		roleGroupConfig.Resources.Memory != nil && roleGroupConfig.Resources.Memory.Limit != nil {
+		memoryLimit := *roleGroupConfig.Resources.Memory.Limit
 		heap := int(util.QuantityToMB(memoryLimit) * 0.8)
 		if heap > 0 {
 			envs = append(envs, corev1.EnvVar{

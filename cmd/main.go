@@ -33,6 +33,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -159,9 +160,11 @@ func main() {
 	// Setup KafkaCluster controller using GenericReconciler
 	kafkaHandler := controller.NewKafkaRoleGroupHandler(mgr.GetScheme())
 
-	// Register the cluster-scope extension that publishes the discovery ConfigMaps
-	// (bootstrap servers aggregated from the bootstrap Listeners).
-	opcommon.GetExtensionRegistry().RegisterClusterExtension(controller.NewDiscoveryExtension(mgr.GetScheme()))
+	// Extension registry is per-CR-type and owned by exactly one reconciler; the
+	// discovery extension publishes the discovery ConfigMaps (bootstrap servers
+	// aggregated from the bootstrap Listeners).
+	extensionRegistry := opcommon.NewExtensionRegistry[*kafkav1alpha1.KafkaCluster]()
+	extensionRegistry.RegisterClusterExtension(controller.NewDiscoveryExtension(mgr.GetScheme()))
 
 	kafkaReconciler, err := reconciler.NewGenericReconciler(
 		&reconciler.GenericReconcilerConfig[*kafkav1alpha1.KafkaCluster]{
@@ -177,14 +180,19 @@ func main() {
 			ServiceAccountNameFunc: func(cr *kafkav1alpha1.KafkaCluster) string {
 				return kafkav1alpha1.DefaultProductName + "-" + cr.GetName()
 			},
-			ProductConfig: controller.ComputeProductConfig,
-			Prototype:     &kafkav1alpha1.KafkaCluster{},
+			ProductConfig:     controller.ComputeProductConfig,
+			ExtensionRegistry: extensionRegistry,
+			Prototype:         &kafkav1alpha1.KafkaCluster{},
 		})
 	if err != nil {
 		setupLog.Error(err, "unable to create GenericReconciler", "controller", "KafkaCluster")
 		os.Exit(1)
 	}
-	if err := kafkaReconciler.SetupWithManager(mgr); err != nil {
+	// ExtraOwns gives the bootstrap Listener CRs a watch AND registers their kind with the
+	// orphan cleaner, which reclaims a removed role group's labelled extras.
+	if err := kafkaReconciler.SetupWithManagerOpts(mgr, reconciler.SetupWithManagerOptions{
+		ExtraOwns: []ctrlclient.Object{&listenerv1alpha1.Listener{}},
+	}); err != nil {
 		setupLog.Error(err, "unable to setup controller", "controller", "KafkaCluster")
 		os.Exit(1)
 	}
