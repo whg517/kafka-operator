@@ -56,10 +56,12 @@ spec:
                           client restarts (such as `cluster-internal` or `external-stable`).
                         type: string
                       brokerListenerClass:
-                        default: cluster-internal
                         description: |-
                           The ListenerClass used for connecting to brokers. Should use a direct connection ListenerClass to minimize cost
-                          and minimize performance overhead (such as `cluster-internal` or `external-unstable`)
+                          and minimize performance overhead (such as `cluster-internal` or `external-unstable`).
+                          Defaults to `cluster-internal` at consumption time — no CRD default: this block is folded
+                          role -> role group, and a structural default here would make any role group declaring
+                          `config` silently override the role's value (see operator-go #573/#580).
                         type: string
                       gracefulShutdownTimeout:
                         description: |-
@@ -312,10 +314,12 @@ spec:
                                 or `external-stable`).
                               type: string
                             brokerListenerClass:
-                              default: cluster-internal
                               description: |-
                                 The ListenerClass used for connecting to brokers. Should use a direct connection ListenerClass to minimize cost
-                                and minimize performance overhead (such as `cluster-internal` or `external-unstable`)
+                                and minimize performance overhead (such as `cluster-internal` or `external-unstable`).
+                                Defaults to `cluster-internal` at consumption time — no CRD default: this block is folded
+                                role -> role group, and a structural default here would make any role group declaring
+                                `config` silently override the role's value (see operator-go #573/#580).
                               type: string
                             gracefulShutdownTimeout:
                               description: |-

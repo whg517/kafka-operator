@@ -317,9 +317,11 @@ type BrokersConfigSpec struct {
 	*commonsv1alpha1.RoleGroupConfigSpec `json:",inline"`
 
 	// The ListenerClass used for connecting to brokers. Should use a direct connection ListenerClass to minimize cost
-	// and minimize performance overhead (such as `cluster-internal` or `external-unstable`)
+	// and minimize performance overhead (such as `cluster-internal` or `external-unstable`).
+	// Defaults to `cluster-internal` at consumption time — no CRD default: this block is folded
+	// role -> role group, and a structural default here would make any role group declaring
+	// `config` silently override the role's value (see operator-go #573/#580).
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:="cluster-internal"
 	BrokerListenerClass string `json:"brokerListenerClass,omitempty"`
 
 	// The ListenerClass used for bootstrapping new clients. Should use a stable ListenerClass to avoid unnecessary client restarts (such as `cluster-internal` or `external-stable`).
