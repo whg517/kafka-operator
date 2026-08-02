@@ -13,7 +13,6 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	opgosecurity "github.com/zncdatadev/operator-go/pkg/security"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -104,9 +103,6 @@ var _ reconciler.RoleGroupHandler[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroup
 func NewKafkaRoleGroupHandler(scheme *runtime.Scheme) *KafkaRoleGroupHandler {
 	h := &KafkaRoleGroupHandler{}
 	h.Scheme = scheme
-	h.RoleImages = map[string]string{}
-	h.RoleContainerPorts = map[string][]corev1.ContainerPort{}
-	h.RoleServicePorts = map[string][]corev1.ServicePort{}
 	// ProductName drives both the framework's spec.image resolution
 	// ("{repo}/kafka:{version}-kubedoop{v}") and the app.kubernetes.io/name label in the
 	// recommended label set.
