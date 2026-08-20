@@ -151,6 +151,7 @@ func (b *StatefulSetBuilder) Build(ctx context.Context) (ctrlclient.Object, erro
 
 func (b *StatefulSetBuilder) createMainContainer() *corev1.Container {
 	image := b.GetImage()
+	roleGroupConfig := b.brokerConfig.RoleGroupConfigSpec
 
 	kafkaContainer := NewKafkaContainer(
 		image.String(),
@@ -159,8 +160,8 @@ func (b *StatefulSetBuilder) createMainContainer() *corev1.Container {
 		b.kafkaTlsSecurity,
 		b.GetObjectMeta().Namespace,
 		b.GetName(),
+		roleGroupConfig.Resources,
 	)
-	roleGroupConfig := b.brokerConfig.RoleGroupConfigSpec
 	return builder.NewContainerBuilder(kafkaContainer.ContainerName(), image).
 		AddEnvVars(kafkaContainer.ContainerEnv()).
 		SetCommand(kafkaContainer.Command()).

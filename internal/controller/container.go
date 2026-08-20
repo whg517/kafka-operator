@@ -33,12 +33,14 @@ func NewKafkaContainer(
 	tlsSecurity *security.KafkaSecurity,
 	namespace string,
 	groupSvcName string,
+	resourceSpec *commonsv1alpha1.ResourcesSpec,
 ) *KafkaContainerBuilder {
 	return &KafkaContainerBuilder{
 		zookeeperDiscoveryZNode: zookeeperDiscoveryZNode,
 		KafkaSecurity:           tlsSecurity,
 		namespace:               namespace,
 		groupSvcName:            groupSvcName,
+		resourceSpec:            resourceSpec,
 	}
 }
 
@@ -86,13 +88,15 @@ func (d *KafkaContainerBuilder) ContainerEnv() []corev1.EnvVar {
 		envs = append(envs, d.getKerbersoAuth().GetEnvs()...)
 	}
 
+	// Without this, kafka-server-start.sh falls back to its own default of
+	// "-Xmx1G -Xms1G", which ignores the configured memory limit entirely.
 	if d.resourceSpec != nil && d.resourceSpec.Memory != nil {
-		memoryLimit := d.resourceSpec.Memory.Limit
-		heap := fmt.Sprintf("-Xmx%dm", int(util.QuantityToMB(memoryLimit)*0.8))
-		envs = append(envs, corev1.EnvVar{
-			Name:  EnvKafkaHeapOpts,
-			Value: heap,
-		})
+		if heapMB := int(util.QuantityToMB(d.resourceSpec.Memory.Limit) * 0.8); heapMB > 0 {
+			envs = append(envs, corev1.EnvVar{
+				Name:  EnvKafkaHeapOpts,
+				Value: fmt.Sprintf("-Xmx%dm", heapMB),
+			})
+		}
 	}
 	return envs
 }
