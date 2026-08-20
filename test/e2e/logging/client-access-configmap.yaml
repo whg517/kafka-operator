@@ -28,13 +28,24 @@ data:
       exit 1
     fi
 
-    if /kubedoop/kafka/bin/kafka-topics.sh --list --topic "$TOPIC" --bootstrap-server "$KAFKA" | grep "$TOPIC"
-    then
-      echo "[SUCCESS] client topic read!"
-    else
-      echo "[ERROR] client topic read failed!"
-      exit 1
-    fi
+    # --create returns as soon as the controller has accepted the topic, but the
+    # new metadata still has to reach the broker that answers the next request,
+    # and the bootstrap service hands every connection to an arbitrary broker.
+    # A single --list right after --create is therefore racy, so poll until the
+    # topic shows up. See kubedoop/kafka-operator#299.
+    READ_TIMEOUT=${READ_TIMEOUT:-90}
+    read_start=$SECONDS
+    until /kubedoop/kafka/bin/kafka-topics.sh --list --bootstrap-server "$KAFKA" | grep -qx "$TOPIC"
+    do
+      if [ $((SECONDS - read_start)) -ge "$READ_TIMEOUT" ]
+      then
+        echo "[ERROR] client topic read failed! topic '$TOPIC' was not listed within ${READ_TIMEOUT}s"
+        exit 1
+      fi
+      echo "topic '$TOPIC' not listed yet, retrying..."
+      sleep 5
+    done
+    echo "[SUCCESS] client topic read! topic '$TOPIC' listed after $((SECONDS - read_start))s"
 
     ############################################################################
     # Test the connection with bad host name

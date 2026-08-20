@@ -53,3 +53,12 @@ spec:
       - podLogs:
           name: client-tls-access
           container: client-tls-access
+      - script:
+          env:
+            - name: NAMESPACE
+              value: ($namespace)
+          content: |
+            # broker-side context: restarts, OOMKills and probe failures explain
+            # most client-access failures (kubedoop/kafka-operator#299)
+            kubectl -n $NAMESPACE get pods -o wide
+            kubectl -n $NAMESPACE get events --sort-by=.lastTimestamp | tail -n 40
