@@ -88,7 +88,9 @@ spec:
 
             envsubst '${KAFKA_IMAGE} ${KAFKA_DISCOVERY}' < client-access-pod.txt | kubectl -n $NAMESPACE apply -f -
       - assert:
-          timeout: 150s
+          # the client polls for the created topic, so leave room for the poll
+          # budget on top of the connection tests
+          timeout: 300s
           resource:
             apiVersion: v1
             kind: Pod
@@ -110,3 +112,7 @@ spec:
             value: ($namespace)
         content: |
           kubectl -n $NAMESPACE get pod client-access -o yaml
+          # broker-side context: restarts, OOMKills and probe failures explain
+          # most client-access failures (kubedoop/kafka-operator#299)
+          kubectl -n $NAMESPACE get pods -o wide
+          kubectl -n $NAMESPACE get events --sort-by=.lastTimestamp | tail -n 40
