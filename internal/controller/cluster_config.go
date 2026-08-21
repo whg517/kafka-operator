@@ -2,7 +2,6 @@ package controller
 
 import (
 	"encoding/json"
-	"fmt"
 	"path"
 	"slices"
 
@@ -43,14 +42,16 @@ type KafkaConfig struct {
 	RequestedSecretLifetime string
 }
 
-// ComputeCli implements OverrideConfiguration.
+// ComputeCli implements OverrideConfiguration. The broker command line is
+// assembled by KafkaContainerBuilder, so there is nothing to merge here.
 func (k *KafkaConfig) ComputeCli() ([]string, error) {
-	return nil, fmt.Errorf("unimplemented")
+	return nil, nil
 }
 
-// ComputeEnv implements OverrideConfiguration.
+// ComputeEnv implements OverrideConfiguration. The broker environment is
+// assembled by KafkaContainerBuilder, so there is nothing to merge here.
 func (k *KafkaConfig) ComputeEnv() (map[string]string, error) {
-	return nil, fmt.Errorf("unimplemented")
+	return nil, nil
 }
 
 // ComputeFile implements OverrideConfiguration.
