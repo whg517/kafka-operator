@@ -66,18 +66,36 @@ spec:
 
               trap "kill $PF_PID 2>/dev/null || true" EXIT
 
-              # Test metrics endpoint accessibility
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9606/metrics)
+              # Wait for the endpoint to serve broker metrics.
+              #
+              # A fixed `sleep 2` is not enough: the port-forward may not be up yet
+              # (curl reports HTTP 000), and the JMX exporter starts answering with
+              # JVM metrics before the broker has registered its own MBeans - so a
+              # single early fetch can see jvm_ metrics but zero kafka_ ones. Both
+              # were observed in CI, on whichever broker happened to start last.
+              TEMP_METRICS=$(mktemp)
+              HTTP_CODE=000
+              for attempt in $(seq 1 30); do
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9606/metrics || echo 000)
+                if [ "$HTTP_CODE" = "200" ]; then
+                  curl -s http://localhost:9606/metrics > "$TEMP_METRICS" 2>/dev/null
+                  # grep -c exits 1 when nothing matches, so guard it under `set -e`
+                  if [ "$(grep -c "^kafka_" "$TEMP_METRICS" || true)" -gt 0 ]; then
+                    break
+                  fi
+                fi
+                echo "  waiting for broker metrics on $POD (attempt $attempt, HTTP $HTTP_CODE)"
+                sleep 2
+              done
+
               if [ "$HTTP_CODE" != "200" ]; then
                 echo "ERROR: Failed to access metrics endpoint, HTTP code: $HTTP_CODE"
+                rm -f "$TEMP_METRICS"
                 kill $PF_PID 2>/dev/null || true
                 exit 1
               fi
 
-              # Fetch metrics once and save to temp file (suppress all output)
               echo "Fetching metrics from $POD..."
-              TEMP_METRICS=$(mktemp)
-              curl -s http://localhost:9606/metrics > "$TEMP_METRICS" 2>/dev/null
 
               # Verify Prometheus format
               if ! grep -q "# TYPE" "$TEMP_METRICS"; then
@@ -87,8 +105,10 @@ spec:
                 exit 1
               fi
 
-              # Verify and count JVM metrics
-              JVM_COUNT=$(grep -c "^jvm_" "$TEMP_METRICS")
+              # Verify and count JVM metrics.
+              # `|| true` is required: grep -c exits 1 on zero matches, which under
+              # `set -e` would abort the script before the check below can report it.
+              JVM_COUNT=$(grep -c "^jvm_" "$TEMP_METRICS" || true)
               if [ "$JVM_COUNT" -eq 0 ]; then
                 echo "ERROR: Missing JVM metrics"
                 rm -f "$TEMP_METRICS"
@@ -97,8 +117,8 @@ spec:
               fi
               echo "  ✓ Found $JVM_COUNT JVM metrics"
 
-              # Verify and count Kafka-specific metrics
-              KAFKA_COUNT=$(grep -c "^kafka_" "$TEMP_METRICS")
+              # Verify and count Kafka-specific metrics (same grep -c caveat)
+              KAFKA_COUNT=$(grep -c "^kafka_" "$TEMP_METRICS" || true)
               if [ "$KAFKA_COUNT" -gt 0 ]; then
                 echo "  ✓ Found $KAFKA_COUNT Kafka metrics"
               else
