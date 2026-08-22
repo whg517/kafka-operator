@@ -59,24 +59,33 @@ spec:
             for POD in $PODS; do
               echo "Testing Pod: $POD"
 
-              # Port-forward to pod
-              kubectl port-forward -n "$NAMESPACE" "$POD" 9606:9606 > /dev/null 2>&1 &
-              PF_PID=$!
-              sleep 2
-
-              trap "kill $PF_PID 2>/dev/null || true" EXIT
-
               # Wait for the endpoint to serve broker metrics.
               #
-              # A fixed `sleep 2` is not enough: the port-forward may not be up yet
-              # (curl reports HTTP 000), and the JMX exporter starts answering with
-              # JVM metrics before the broker has registered its own MBeans - so a
-              # single early fetch can see jvm_ metrics but zero kafka_ ones. Both
-              # were observed in CI, on whichever broker happened to start last.
+              # The port-forward is re-established on every attempt on purpose.
+              # All three pods reuse local port 9606, and a forward started before
+              # the previous one released the port exits immediately - leaving
+              # nothing listening, so retrying only curl can never recover. That is
+              # what CI showed: 30 straight attempts of HTTP 000 against a pod whose
+              # StatefulSet had already asserted readyReplicas: 3.
+              #
+              # Retrying the fetch still matters too: the JMX exporter answers with
+              # jvm_ metrics before the broker registers its own MBeans, so an early
+              # fetch can look healthy while carrying zero kafka_ metrics.
               TEMP_METRICS=$(mktemp)
               HTTP_CODE=000
+              PF_PID=""
               for attempt in $(seq 1 30); do
-                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9606/metrics || echo 000)
+                if [ -n "$PF_PID" ]; then
+                  kill "$PF_PID" 2>/dev/null || true
+                  wait "$PF_PID" 2>/dev/null || true
+                fi
+                kubectl port-forward -n "$NAMESPACE" "$POD" 9606:9606 > /dev/null 2>&1 &
+                PF_PID=$!
+                sleep 2
+
+                # curl already prints 000 when it cannot connect; `|| true` only
+                # keeps its non-zero exit from tripping `set -e`
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9606/metrics || true)
                 if [ "$HTTP_CODE" = "200" ]; then
                   curl -s http://localhost:9606/metrics > "$TEMP_METRICS" 2>/dev/null
                   # grep -c exits 1 when nothing matches, so guard it under `set -e`
@@ -85,8 +94,9 @@ spec:
                   fi
                 fi
                 echo "  waiting for broker metrics on $POD (attempt $attempt, HTTP $HTTP_CODE)"
-                sleep 2
               done
+
+              trap "kill $PF_PID 2>/dev/null || true" EXIT
 
               if [ "$HTTP_CODE" != "200" ]; then
                 echo "ERROR: Failed to access metrics endpoint, HTTP code: $HTTP_CODE"
