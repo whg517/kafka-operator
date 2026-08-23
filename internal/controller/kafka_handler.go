@@ -13,13 +13,15 @@ import (
 	"github.com/zncdatadev/operator-go/pkg/productlogging"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	opgosecurity "github.com/zncdatadev/operator-go/pkg/security"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
-	"github.com/zncdatadev/kafka-operator/internal/util/version"
 )
 
 var logger = ctrl.Log.WithName("kafka-handler")
@@ -39,15 +41,19 @@ func parseSecretLifetime(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// RBAC for the GenericReconciler-driven KafkaCluster controller: the CR itself, the role
-// group resources the framework applies (ConfigMap/Services/StatefulSet/PDB/SA), the
-// bootstrap Listener CRs (ExtraResources), pods for health checks, and events.
+// RBAC for the GenericReconciler-driven KafkaCluster controller — the canonical set from
+// operator-go docs/security.md §3.3, plus the bootstrap Listener CRs kafka ships as
+// ExtraResources. Deliberate absences: no `delete` on serviceaccounts (reclaimed by
+// owner-reference GC) and no `update`/`patch` on the CR body (the framework writes only
+// Status().Update; add them back only if a finalizer is ever registered).
 //
-// +kubebuilder:rbac:groups=kafka.kubedoop.dev,resources=kafkaclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kafka.kubedoop.dev,resources=kafkaclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kafka.kubedoop.dev,resources=kafkaclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kafka.kubedoop.dev,resources=kafkaclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=configmaps;services;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps;services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
@@ -87,40 +93,86 @@ var kafkaServerLogging = productlogging.ContainerLogging{
 // bootstrap Listener CR is shipped through RoleGroupResources.ExtraResources so the
 // framework applies it before the StatefulSet (pods mount a CSI volume referencing it).
 type KafkaRoleGroupHandler struct {
-	reconciler.BaseRoleGroupHandler[*kafkav1alpha1.KafkaCluster]
+	*reconciler.BaseRoleGroupHandler[*kafkav1alpha1.KafkaCluster]
 }
 
 var _ reconciler.RoleGroupHandler[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroupHandler{}
+var _ reconciler.RoleProvider[*kafkav1alpha1.KafkaCluster] = &KafkaRoleGroupHandler{}
 
-// NewKafkaRoleGroupHandler creates a handler with the framework-level options that are
-// constant across reconciliations. Per-CR options (image, ports) are set in BuildResources.
+// NewKafkaRoleGroupHandler creates the handler. It carries only reconcile-invariant
+// collaborators: everything a ROLE is made of is declared per reconcile by DeclareRoles,
+// with the cr in hand.
 func NewKafkaRoleGroupHandler(scheme *runtime.Scheme) *KafkaRoleGroupHandler {
-	h := &KafkaRoleGroupHandler{}
-	h.Scheme = scheme
-	// ProductName supplies the app.kubernetes.io/name label value and the repository path
-	// segment of resolved images; ImageDefaults fills whatever spec.image leaves empty,
-	// per field and user-first, evaluated every reconcile
-	// ("{repo}/kafka:{productVersion}-kubedoop{operator build version}").
-	h.ProductName = kafkav1alpha1.DefaultProductName
-	h.ImageDefaults = commonsv1alpha1.ImageSpec{
-		Repo:           kafkav1alpha1.DefaultRepository,
-		ProductVersion: kafkav1alpha1.DefaultProductVersion,
-		// Dev operator -> dev image: the co-released product image carries the operator
-		// stack version.
-		KubedoopVersion: version.BuildVersion,
-	}
-	// Brokers must resolve each other before readiness, and topic data must be persistent.
-	h.PublishNotReadyAddresses = true
-	h.StorageMountPath = KubedoopDataDir
-	// Rename the primary container to "kafka" and declare it as the logging container. The
-	// framework renames the container before injecting the shared Vector log volume, so the
-	// producer mounts it on "kafka".
-	h.MainContainerName = kafkav1alpha1.KafkaContainerName
-	h.LoggingContainers = []productlogging.ContainerLogging{kafkaServerLogging}
+	base := reconciler.NewBaseRoleGroupHandler[*kafkav1alpha1.KafkaCluster](scheme)
 	// Product-owned identity labels drive all resource selectors (decoupled from the
 	// descriptive app.kubernetes.io/* labels).
-	h.LabelDomain = LabelDomain
-	return h
+	base.LabelDomain = LabelDomain
+	return &KafkaRoleGroupHandler{BaseRoleGroupHandler: base}
+}
+
+// DeclareRoles implements reconciler.RoleProvider: the broker role's facts, produced once
+// per reconcile pass with the cr in hand — a port that moves because the CR enabled TLS is
+// computed here, from THIS cr, never from process-wide handler state.
+func (h *KafkaRoleGroupHandler) DeclareRoles(
+	_ context.Context, _ ctrlclient.Client, cr *kafkav1alpha1.KafkaCluster,
+) (reconciler.RoleCatalog, error) {
+	kafkaSecurity := security.NewKafkaSecurity(cr)
+
+	// Kafka's default scheduling posture: prefer spreading brokers of the same cluster
+	// across nodes. Declared as a config default, so anything the user states in
+	// config.affinity wins member-by-member.
+	affinity, err := reconciler.EncodeAffinity(&corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+				reconciler.PreferredAffinityTerm(70, corev1.LabelHostname,
+					reconciler.RoleSelectorLabels(cr.Name, kafkav1alpha1.BrokerRoleName)),
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode default affinity: %w", err)
+	}
+
+	return reconciler.RoleCatalog{
+		kafkav1alpha1.BrokerRoleName: {
+			// The primary container is named "kafka"; the log producer declaration below
+			// names the same container, keeping config and shared log volume in lockstep.
+			MainContainerName: kafkav1alpha1.KafkaContainerName,
+			// Ports[0] is the client port — the one that means "this broker can serve".
+			ContainerPorts: KafkaContainerPorts(kafkaSecurity),
+			ServicePorts:   kafkaServicePorts(kafkaSecurity),
+			// The args (start script with listener overrides) are per role group and are set
+			// in BuildResources; only the interpreter is a role-wide fact.
+			Command:        []string{"/bin/bash", "-x", "-euo", "pipefail", "-c"},
+			ReadinessProbe: kafkaReadinessProbe(kafkaSecurity),
+			LivenessProbe:  kafkaLivenessProbe(kafkaSecurity),
+			// Topic data must be persistent.
+			DataVolume: &reconciler.DataVolume{MountPath: KubedoopDataDir},
+			// Brokers must resolve each other's DNS before readiness.
+			PublishNotReadyAddresses: true,
+			LogProducers:             []productlogging.ContainerLogging{kafkaServerLogging},
+			// Kafka's defaults for the framework-owned config half, folded BENEATH the
+			// user's role/role-group config: resource guarantees (the memory limit also
+			// drives KAFKA_HEAP_OPTS), pre-framework termination grace, and the
+			// anti-affinity above.
+			ConfigDefaults: &commonsv1alpha1.RoleGroupConfigSpec{
+				Affinity:                affinity,
+				GracefulShutdownTimeout: ptr.To(defaultGracefulShutdownTimeout.String()),
+				Resources: &commonsv1alpha1.ResourcesSpec{
+					CPU: &commonsv1alpha1.CPUResource{
+						Min: ptr.To(resource.MustParse(defaultCPURequest)),
+						Max: ptr.To(resource.MustParse(defaultCPULimit)),
+					},
+					Memory: &commonsv1alpha1.MemoryResource{
+						Limit: ptr.To(resource.MustParse(defaultMemoryLimit)),
+					},
+					Storage: &commonsv1alpha1.StorageResource{
+						Capacity: ptr.To(resource.MustParse(defaultStorageCapacity)),
+					},
+				},
+			},
+		},
+	}, nil
 }
 
 // BuildResources builds all Kubernetes resources for a Kafka broker role group.
@@ -144,13 +196,9 @@ func (h *KafkaRoleGroupHandler) BuildResources(
 	bootstrapListenerName := BootstrapListenerName(buildCtx.ResourceName)
 	listenerProvisioner := h.buildListenerProvisioner(brokerCfg, bootstrapListenerName)
 
-	// Ports depend on the CR's security config (a TLS toggle moves the client port), so
-	// they go on the per-call build context — the handler stays read-only in this method
-	// and shared-instance reconciles cannot leak configuration between clusters (#525).
-	buildCtx.ContainerPorts = KafkaContainerPorts(kafkaSecurity)
-	buildCtx.ServicePorts = kafkaServicePorts(kafkaSecurity)
-	// Ensure the Kafka resource defaults (storage/CPU/memory) for anything the user omitted.
-	h.ensureResourceDefaults(buildCtx)
+	// Ports, probes, command, data volume and the Kafka config defaults are declared in
+	// DeclareRoles (per reconcile pass, from this cr); resource defaults arrive via the
+	// declaration's ConfigDefaults through the framework fold.
 
 	// Hand the CSI volumes (TLS keystores, Kerberos keytab, listener addresses) to the
 	// framework so base.BuildResources() injects them into the pod and the main container.

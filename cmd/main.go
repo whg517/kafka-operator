@@ -26,6 +26,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	listenerv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/listeners/v1alpha1"
 	opcommon "github.com/zncdatadev/operator-go/pkg/common"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
@@ -169,18 +170,36 @@ func main() {
 	kafkaReconciler, err := reconciler.NewGenericReconciler(
 		&reconciler.GenericReconcilerConfig[*kafkav1alpha1.KafkaCluster]{
 			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
+			// Uncached: used to refresh the resourceVersion after a conflicting status
+			// write, which the informer cache is by definition too stale to serve.
+			APIReader: mgr.GetAPIReader(),
+			Scheme:    mgr.GetScheme(),
 			// operator-go's Recorder field is the (deprecated) record.EventRecorder; the
 			// replacement GetEventRecorder returns the incompatible events.EventRecorder.
 			Recorder:         mgr.GetEventRecorderFor("kafka-cluster-controller"), //nolint:staticcheck
 			RoleGroupHandler: kafkaHandler,
-			// Per-cluster ServiceAccount: a shared static name breaks two KafkaClusters in
-			// one namespace (AlreadyOwnedError; deleting one cluster would GC the SA out
-			// from under the other's pods).
-			ServiceAccountNameFunc: func(cr *kafkav1alpha1.KafkaCluster) string {
-				return kafkav1alpha1.DefaultProductName + "-" + cr.GetName()
+			// The handler also declares the broker role, once per reconcile pass with the
+			// cr in hand — ports, primary container name, probes, log producers, config
+			// defaults. The workload ServiceAccount is framework-derived
+			// ("kafkacluster-<cluster>"); kafka pods call no Kubernetes API, so no
+			// WorkloadRBACRules.
+			RoleProvider: kafkaHandler,
+			// Kafka's derived config (default config files, heap from the effective
+			// memory limit) flows through the merge pipeline as the lowest layer; user
+			// overrides always win.
+			RoleGroupResolver: reconciler.RoleGroupResolverFunc[*kafkav1alpha1.KafkaCluster](
+				controller.ResolveRoleGroup),
+			// Read every reconcile, so an operator upgrade moves existing clusters onto
+			// the co-released product image
+			// ("{repo}/kafka:{productVersion}-kubedoop{operator build version}").
+			ImageResolution: reconciler.ImageResolution{
+				ProductName: kafkav1alpha1.DefaultProductName,
+				Defaults: commonsv1alpha1.ImageSpec{
+					Repo:            kafkav1alpha1.DefaultRepository,
+					ProductVersion:  kafkav1alpha1.DefaultProductVersion,
+					KubedoopVersion: version.BuildVersion,
+				},
 			},
-			ProductConfig:     controller.ComputeProductConfig,
 			ExtensionRegistry: extensionRegistry,
 			Prototype:         &kafkav1alpha1.KafkaCluster{},
 		})

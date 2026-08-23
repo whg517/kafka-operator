@@ -8,7 +8,6 @@ rules:
   - ""
   resources:
   - configmaps
-  - serviceaccounts
   - services
   verbs:
   - create
@@ -28,10 +27,30 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - persistentvolumeclaims
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - apps
@@ -50,12 +69,8 @@ rules:
   resources:
   - kafkaclusters
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - kafka.kubedoop.dev

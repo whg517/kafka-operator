@@ -6,8 +6,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	listenerv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/listeners/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/config"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 )
@@ -49,13 +52,22 @@ var _ = Describe("server.properties generation", func() {
 		Expect(out).To(Equal("a=1\nb=2\nc=3\n"))
 	})
 
-	It("provides Kafka defaults through the product config layer", func() {
-		overrides := ComputeProductConfig(nil, kafkav1alpha1.BrokerRoleName, "default")
-		server := overrides.ConfigOverrides[kafkav1alpha1.ServerFileName]
+	It("provides Kafka defaults and the derived heap through the resolver contribution", func() {
+		buildCtx := newTestBuildCtx()
+		buildCtx.RoleGroupSpec.Config = &commonsv1alpha1.RoleGroupConfigSpec{
+			Resources: &commonsv1alpha1.ResourcesSpec{
+				Memory: &commonsv1alpha1.MemoryResource{Limit: ptr.To(resource.MustParse("2Gi"))},
+			},
+		}
+		contribution, err := ResolveRoleGroup(context.Background(), nil, nil, buildCtx)
+		Expect(err).NotTo(HaveOccurred())
+		server := contribution.ConfigOverrides[kafkav1alpha1.ServerFileName]
 		Expect(server).To(HaveKeyWithValue("controlled.shutdown.enable", "true"))
 		Expect(server).To(HaveKeyWithValue("log.dirs", "/kubedoop/data/topicdata"))
-		Expect(overrides.ConfigOverrides[kafkav1alpha1.SecurityFileName]).To(
+		Expect(contribution.ConfigOverrides[kafkav1alpha1.SecurityFileName]).To(
 			HaveKeyWithValue("networkaddress.cache.ttl", "30"))
+		// 80% of 2048MB.
+		Expect(contribution.EnvVars).To(HaveKeyWithValue(EnvKafkaHeapOpts, "-Xmx1638m"))
 	})
 })
 

@@ -1,27 +1,33 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"path"
 	"sort"
 	"strings"
 
-	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	opgosecurity "github.com/zncdatadev/operator-go/pkg/security"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
+	"github.com/zncdatadev/kafka-operator/internal/util"
 )
 
-// ComputeProductConfig is the framework ProductConfig hook: it supplies the Kafka default
-// config files as the LOWEST merge layer (product < role < role group), so user overrides
-// always win and defaults are recomputed every reconcile.
-func ComputeProductConfig(_ *kafkav1alpha1.KafkaCluster, _ string, _ string) *commonsv1alpha1.OverridesSpec {
-	return &commonsv1alpha1.OverridesSpec{
+// ResolveRoleGroup is the framework RoleGroupResolver hook: what Kafka DERIVES from a role
+// group's effective config — the default config-file content and the JVM heap sized from
+// the effective memory limit. Both are folded BENEATH the user's own configOverrides and
+// envOverrides per key, so every derived value stays a default the user can refine.
+func ResolveRoleGroup(
+	_ context.Context, _ client.Client, _ *kafkav1alpha1.KafkaCluster,
+	buildCtx *reconciler.RoleGroupBuildContext,
+) (*reconciler.Contribution, error) {
+	contribution := &reconciler.Contribution{
 		ConfigOverrides: map[string]map[string]string{
 			kafkav1alpha1.ServerFileName: {
 				"zookeeper.connection.timeout.ms": "18000",
@@ -34,6 +40,21 @@ func ComputeProductConfig(_ *kafkav1alpha1.KafkaCluster, _ string, _ string) *co
 			},
 		},
 	}
+
+	// Heap limit from the EFFECTIVE memory limit (80%): the fold has already resolved the
+	// declaration's default against the user's role/role-group config, so a user raising
+	// the memory limit raises the heap with it — and an explicit KAFKA_HEAP_OPTS in
+	// envOverrides still wins.
+	if resources := buildCtx.EffectiveConfig().Resources; resources != nil &&
+		resources.Memory != nil && resources.Memory.Limit != nil {
+		if heap := int(util.QuantityToMB(*resources.Memory.Limit) * 0.8); heap > 0 {
+			contribution.EnvVars = map[string]string{
+				EnvKafkaHeapOpts: fmt.Sprintf("-Xmx%dm", heap),
+			}
+		}
+	}
+
+	return contribution, nil
 }
 
 // buildConfigMap creates the ConfigMap for a broker role group: server.properties (merged
@@ -53,10 +74,10 @@ func (h *KafkaRoleGroupHandler) buildConfigMap(
 
 	// Framework-owned logging config: log4j.properties (from the deep-merged CRD logging
 	// spec, with the file appender gated on Vector) and, when Vector is enabled and the CR
-	// exposes the aggregator ConfigMap, vector.yaml. h.LoggingContainers is the single
-	// declaration that also drives the shared log volume, so config and volume stay in
-	// lockstep.
-	loggingData, err := reconciler.RenderLoggingConfigMapData(buildCtx, h.LoggingContainers)
+	// exposes the aggregator ConfigMap, vector.yaml. The declaration's LogProducers is the
+	// single statement that also drives the shared log volume, so config and volume stay
+	// in lockstep.
+	loggingData, err := reconciler.RenderLoggingConfigMapData(buildCtx, buildCtx.Declaration.LogProducers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to render logging config: %w", err)
 	}

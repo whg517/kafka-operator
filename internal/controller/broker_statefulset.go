@@ -5,21 +5,16 @@ import (
 	"strings"
 	"time"
 
-	commonsv1alpha1 "github.com/zncdatadev/operator-go/pkg/apis/commons/v1alpha1"
 	opgoconstant "github.com/zncdatadev/operator-go/pkg/constant"
 	"github.com/zncdatadev/operator-go/pkg/listener"
 	"github.com/zncdatadev/operator-go/pkg/reconciler"
 	opgosecurity "github.com/zncdatadev/operator-go/pkg/security"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	kafkav1alpha1 "github.com/zncdatadev/kafka-operator/api/v1alpha1"
 	"github.com/zncdatadev/kafka-operator/internal/security"
-	"github.com/zncdatadev/kafka-operator/internal/util"
 )
 
 // defaultStorageCapacity is the fallback data PVC size when resources.storage is not
@@ -38,46 +33,13 @@ const (
 	defaultMemoryLimit = "1Gi"
 )
 
-// ensureResourceDefaults makes sure the merged role group config carries the Kafka resource
-// defaults for anything the user omitted, restoring pre-framework behavior:
-//   - storage: without it the "data" volume mount has no backing PVC and the StatefulSet is
-//     rejected;
-//   - CPU/memory: without them broker pods run BestEffort with the JVM default heap (a
-//     quarter of node RAM) — the memory limit also drives KAFKA_HEAP_OPTS (80%).
-func (h *KafkaRoleGroupHandler) ensureResourceDefaults(buildCtx *reconciler.RoleGroupBuildContext) {
-	cfg := buildCtx.RoleGroupSpec.Config
-	if cfg == nil {
-		cfg = &commonsv1alpha1.RoleGroupConfigSpec{}
-		buildCtx.RoleGroupSpec.Config = cfg
-	}
-	if cfg.Resources == nil {
-		cfg.Resources = &commonsv1alpha1.ResourcesSpec{}
-	}
-	switch {
-	case cfg.Resources.Storage == nil:
-		cfg.Resources.Storage = &commonsv1alpha1.StorageResource{Capacity: ptr.To(resource.MustParse(defaultStorageCapacity))}
-	case cfg.Resources.Storage.Capacity == nil || cfg.Resources.Storage.Capacity.IsZero():
-		cfg.Resources.Storage.Capacity = ptr.To(resource.MustParse(defaultStorageCapacity))
-	}
-	if cfg.Resources.CPU == nil {
-		cfg.Resources.CPU = &commonsv1alpha1.CPUResource{
-			Min: ptr.To(resource.MustParse(defaultCPURequest)),
-			Max: ptr.To(resource.MustParse(defaultCPULimit)),
-		}
-	}
-	if cfg.Resources.Memory == nil {
-		cfg.Resources.Memory = &commonsv1alpha1.MemoryResource{
-			Limit: ptr.To(resource.MustParse(defaultMemoryLimit)),
-		}
-	}
-}
-
-// customizeStatefulSet applies Kafka specifics to the StatefulSet built by the base
-// handler: the start command (with the listener overrides), env, TCP probes, pod
-// management policy, affinity and termination grace. Pod identity (ServiceAccount), the
-// default pod/container SecurityContext, the config ConfigMap mount, the data PVC, the
-// shared Vector log volume and the CSI volumes (TLS/Kerberos/listeners, registered via
-// buildCtx.VolumeProviders) are already in place from the framework builder.
+// customizeStatefulSet applies the Kafka specifics that vary per role group to the
+// StatefulSet built by the base handler: the start args (with the listener overrides) and
+// env. Everything role-wide — command interpreter, TCP probes, data PVC, resource/affinity/
+// grace defaults — is declared in DeclareRoles; pod identity (ServiceAccount), the default
+// pod/container SecurityContext, the config ConfigMap mount, the shared Vector log volume
+// and the CSI volumes (TLS/Kerberos/listeners, registered via buildCtx.VolumeProviders)
+// are already in place from the framework builder.
 func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 	sts *appsv1.StatefulSet,
 	buildCtx *reconciler.RoleGroupBuildContext,
@@ -100,9 +62,6 @@ func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 	// not set it — user podOverrides keep precedence (pre-framework behavior).
 	main := &podSpec.Containers[0]
 	override := podOverrideContainer(buildCtx, main.Name)
-	if len(override.Command) == 0 {
-		main.Command = []string{"/bin/bash", "-x", "-euo", "pipefail", "-c"}
-	}
 	if len(override.Args) == 0 {
 		args, err := h.getMainContainerArgs(buildCtx, kafkaSecurity, secretProvisioner, listenerProvisioner)
 		if err != nil {
@@ -111,24 +70,7 @@ func (h *KafkaRoleGroupHandler) customizeStatefulSet(
 		main.Args = args
 	}
 	// User envOverrides (already on the container from the builder) win over our defaults.
-	main.Env = append(h.getEnvVars(buildCtx, cr, kafkaSecurity, secretProvisioner), main.Env...)
-	if override.ReadinessProbe == nil {
-		main.ReadinessProbe = h.getReadinessProbe(kafkaSecurity)
-	}
-	if override.LivenessProbe == nil {
-		main.LivenessProbe = h.getLivenessProbe(kafkaSecurity)
-	}
-
-	// Config affinity and gracefulShutdownTimeout are consumed by the framework (with
-	// PodOverrides precedence); only the Kafka defaults remain product-side, applied when
-	// neither config nor overrides set a value.
-	if podSpec.Affinity == nil {
-		podSpec.Affinity = defaultAffinity(cr.Name)
-	}
-	if podSpec.TerminationGracePeriodSeconds == nil {
-		seconds := int64(defaultGracefulShutdownTimeout.Seconds())
-		podSpec.TerminationGracePeriodSeconds = &seconds
-	}
+	main.Env = append(h.getEnvVars(cr, kafkaSecurity, secretProvisioner), main.Env...)
 
 	return nil
 }
@@ -207,7 +149,6 @@ cp -RL "${CONFIG_DIR_MOUNT%%/}"/* "${CONFIG_DIR}"`, opgoconstant.KubedoopConfigD
 
 // getEnvVars returns environment variables for the main container.
 func (h *KafkaRoleGroupHandler) getEnvVars(
-	buildCtx *reconciler.RoleGroupBuildContext,
 	cr *kafkav1alpha1.KafkaCluster,
 	kafkaSecurity *security.KafkaSecurity,
 	secretProvisioner *opgosecurity.SecretProvisioner,
@@ -255,25 +196,14 @@ func (h *KafkaRoleGroupHandler) getEnvVars(
 		)
 	}
 
-	// Heap limit from memory resources (80% of the limit).
-	roleGroupConfig := buildCtx.RoleGroupSpec.GetConfig()
-	if roleGroupConfig != nil && roleGroupConfig.Resources != nil &&
-		roleGroupConfig.Resources.Memory != nil && roleGroupConfig.Resources.Memory.Limit != nil {
-		memoryLimit := *roleGroupConfig.Resources.Memory.Limit
-		heap := int(util.QuantityToMB(memoryLimit) * 0.8)
-		if heap > 0 {
-			envs = append(envs, corev1.EnvVar{
-				Name:  EnvKafkaHeapOpts,
-				Value: fmt.Sprintf("-Xmx%dm", heap),
-			})
-		}
-	}
+	// KAFKA_HEAP_OPTS is derived from the effective memory limit in ResolveRoleGroup and
+	// arrives through the merged env (beneath the user's envOverrides).
 
 	return envs
 }
 
-// getLivenessProbe returns the liveness probe (TCP on the client port).
-func (h *KafkaRoleGroupHandler) getLivenessProbe(kafkaSecurity *security.KafkaSecurity) *corev1.Probe {
+// kafkaLivenessProbe returns the liveness probe (TCP on the client port).
+func kafkaLivenessProbe(kafkaSecurity *security.KafkaSecurity) *corev1.Probe {
 	return &corev1.Probe{
 		FailureThreshold:    6,
 		InitialDelaySeconds: 20,
@@ -286,8 +216,8 @@ func (h *KafkaRoleGroupHandler) getLivenessProbe(kafkaSecurity *security.KafkaSe
 	}
 }
 
-// getReadinessProbe returns the readiness probe (TCP on the client port).
-func (h *KafkaRoleGroupHandler) getReadinessProbe(kafkaSecurity *security.KafkaSecurity) *corev1.Probe {
+// kafkaReadinessProbe returns the readiness probe (TCP on the client port).
+func kafkaReadinessProbe(kafkaSecurity *security.KafkaSecurity) *corev1.Probe {
 	return &corev1.Probe{
 		FailureThreshold:    3,
 		InitialDelaySeconds: 20,
@@ -296,29 +226,6 @@ func (h *KafkaRoleGroupHandler) getReadinessProbe(kafkaSecurity *security.KafkaS
 		TimeoutSeconds:      1,
 		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(kafkaSecurity.ClientPortName())},
-		},
-	}
-}
-
-// defaultAffinity is the Kafka default: prefer spreading brokers of the same cluster
-// across nodes.
-func defaultAffinity(clusterName string) *corev1.Affinity {
-	return &corev1.Affinity{
-		PodAntiAffinity: &corev1.PodAntiAffinity{
-			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
-				{
-					Weight: 70,
-					PodAffinityTerm: corev1.PodAffinityTerm{
-						LabelSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								LabelKubernetesInstance:       clusterName,
-								"app.kubernetes.io/component": kafkav1alpha1.BrokerRoleName,
-							},
-						},
-						TopologyKey: corev1.LabelHostname,
-					},
-				},
-			},
 		},
 	}
 }
