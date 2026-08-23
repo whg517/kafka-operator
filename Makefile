@@ -152,7 +152,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name $(PROJECT_NAME)-builder
 	$(CONTAINER_TOOL) buildx use $(PROJECT_NAME)-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --build-arg LDFLAGS=$(LDFLAGS) --tag ${IMG} --metadata-file docker-digests.json -f Dockerfile.cross .
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --build-arg LDFLAGS=$(LDFLAGS) --tag ${IMG} --metadata-file docker-digests.json -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm $(PROJECT_NAME)-builder
 	rm Dockerfile.cross
 
@@ -291,7 +291,7 @@ helm-chart-publish: helm-chart-package ## Publish helm chart for the operator.
 ##@ Chainsaw E2E
 
 CHAINSAW ?= $(LOCALBIN)/chainsaw
-CHAINSAW_VERSION ?= v0.2.13
+CHAINSAW_VERSION ?= v0.2.14
 CHAINSAW_CLUSTER ?= chainsaw-${PROJECT_NAME}
 CHAINSAW_KUBECONFIG ?= .kubeconfig
 # KIND_K8S_VERSION refers to the version of Kubernetes to be used by kind node image.
@@ -353,11 +353,11 @@ chart-e2e: setup-chainsaw-cluster chainsaw docker-build helm-chart-package ## Ru
 	"$(HELM)" upgrade --install --create-namespace --namespace kafka-operator \
 		--kubeconfig $(CHAINSAW_KUBECONFIG) --wait $(PROJECT_NAME) \
 		target/charts/$(PROJECT_NAME)-$(VERSION).tgz
-	KUBECONFIG=$(CHAINSAW_KUBECONFIG) $(CHAINSAW) test --config ./test/e2e/.chainsaw.yaml --test-dir ./test/e2e/
+	KUBECONFIG=$(CHAINSAW_KUBECONFIG) $(CHAINSAW) test --config ./test/e2e/.chainsaw.yaml --test-dir ./test/e2e/ --set product_version=$(PRODUCT_VERSION)
 
 .PHONY: chainsaw-e2e
 chainsaw-e2e: ## Run the chainsaw e2e tests
-	KUBECONFIG=$(CHAINSAW_KUBECONFIG) $(CHAINSAW) test --config ./test/e2e/.chainsaw.yaml --test-dir ./test/e2e/
+	KUBECONFIG=$(CHAINSAW_KUBECONFIG) $(CHAINSAW) test --config ./test/e2e/.chainsaw.yaml --test-dir ./test/e2e/ --set product_version=$(PRODUCT_VERSION)
 
 .PHONY: cleanup-chainsaw-e2e
 cleanup-chainsaw-e2e: ## Run the chainsaw cleanup

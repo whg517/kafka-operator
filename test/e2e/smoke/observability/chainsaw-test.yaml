@@ -59,25 +59,53 @@ spec:
             for POD in $PODS; do
               echo "Testing Pod: $POD"
 
-              # Port-forward to pod
-              kubectl port-forward -n "$NAMESPACE" "$POD" 9606:9606 > /dev/null 2>&1 &
-              PF_PID=$!
-              sleep 2
+              # Wait for the endpoint to serve broker metrics.
+              #
+              # The port-forward is re-established on every attempt on purpose.
+              # All three pods reuse local port 9606, and a forward started before
+              # the previous one released the port exits immediately - leaving
+              # nothing listening, so retrying only curl can never recover. That is
+              # what CI showed: 30 straight attempts of HTTP 000 against a pod whose
+              # StatefulSet had already asserted readyReplicas: 3.
+              #
+              # Retrying the fetch still matters too: the JMX exporter answers with
+              # jvm_ metrics before the broker registers its own MBeans, so an early
+              # fetch can look healthy while carrying zero kafka_ metrics.
+              TEMP_METRICS=$(mktemp)
+              HTTP_CODE=000
+              PF_PID=""
+              for attempt in $(seq 1 30); do
+                if [ -n "$PF_PID" ]; then
+                  kill "$PF_PID" 2>/dev/null || true
+                  wait "$PF_PID" 2>/dev/null || true
+                fi
+                kubectl port-forward -n "$NAMESPACE" "$POD" 9606:9606 > /dev/null 2>&1 &
+                PF_PID=$!
+                sleep 2
+
+                # curl already prints 000 when it cannot connect; `|| true` only
+                # keeps its non-zero exit from tripping `set -e`
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9606/metrics || true)
+                if [ "$HTTP_CODE" = "200" ]; then
+                  curl -s http://localhost:9606/metrics > "$TEMP_METRICS" 2>/dev/null
+                  # grep -c exits 1 when nothing matches, so guard it under `set -e`
+                  if [ "$(grep -c "^kafka_" "$TEMP_METRICS" || true)" -gt 0 ]; then
+                    break
+                  fi
+                fi
+                echo "  waiting for broker metrics on $POD (attempt $attempt, HTTP $HTTP_CODE)"
+              done
 
               trap "kill $PF_PID 2>/dev/null || true" EXIT
 
-              # Test metrics endpoint accessibility
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9606/metrics)
               if [ "$HTTP_CODE" != "200" ]; then
                 echo "ERROR: Failed to access metrics endpoint, HTTP code: $HTTP_CODE"
+                rm -f "$TEMP_METRICS"
                 kill $PF_PID 2>/dev/null || true
                 exit 1
               fi
 
-              # Fetch metrics once and save to temp file (suppress all output)
               echo "Fetching metrics from $POD..."
-              TEMP_METRICS=$(mktemp)
-              curl -s http://localhost:9606/metrics > "$TEMP_METRICS" 2>/dev/null
 
               # Verify Prometheus format
               if ! grep -q "# TYPE" "$TEMP_METRICS"; then
@@ -87,8 +115,10 @@ spec:
                 exit 1
               fi
 
-              # Verify and count JVM metrics
-              JVM_COUNT=$(grep -c "^jvm_" "$TEMP_METRICS")
+              # Verify and count JVM metrics.
+              # `|| true` is required: grep -c exits 1 on zero matches, which under
+              # `set -e` would abort the script before the check below can report it.
+              JVM_COUNT=$(grep -c "^jvm_" "$TEMP_METRICS" || true)
               if [ "$JVM_COUNT" -eq 0 ]; then
                 echo "ERROR: Missing JVM metrics"
                 rm -f "$TEMP_METRICS"
@@ -97,8 +127,8 @@ spec:
               fi
               echo "  ✓ Found $JVM_COUNT JVM metrics"
 
-              # Verify and count Kafka-specific metrics
-              KAFKA_COUNT=$(grep -c "^kafka_" "$TEMP_METRICS")
+              # Verify and count Kafka-specific metrics (same grep -c caveat)
+              KAFKA_COUNT=$(grep -c "^kafka_" "$TEMP_METRICS" || true)
               if [ "$KAFKA_COUNT" -gt 0 ]; then
                 echo "  ✓ Found $KAFKA_COUNT Kafka metrics"
               else
