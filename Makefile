@@ -368,6 +368,30 @@ cleanup-chainsaw-e2e: ## Run the chainsaw cleanup
 		done; \
 	fi
 
+# A fixed pre-framework baseline makes the upgrade/rollback contract reproducible.
+UPGRADE_BASELINE_REF ?= d18d27f4578ad4f2acf25c3e4af36f5661ccf183
+UPGRADE_BASELINE_DIR ?= $(CURDIR)/.worktree/upgrade-baseline
+UPGRADE_BASELINE_IMAGE ?= kafka-operator:upgrade-baseline
+UPGRADE_EVIDENCE_DIR ?= $(CURDIR)/upgrade-evidence
+
+.PHONY: framework-upgrade-e2e
+framework-upgrade-e2e: kustomize docker-build ## Verify pre-framework upgrade and rollback with persisted Kafka messages on a fresh kind cluster.
+	@clusters="$$("$(KIND)" get clusters)" || exit 1; \
+		if printf '%s\n' "$$clusters" | grep -Fxq "$(CHAINSAW_CLUSTER)"; then \
+			echo "Use a fresh cluster name; inspect/delete the previous test cluster first." >&2; exit 1; \
+		fi
+	$(MAKE) setup-chainsaw-cluster
+	@if [ ! -d "$(UPGRADE_BASELINE_DIR)" ]; then \
+		git worktree add --detach "$(UPGRADE_BASELINE_DIR)" "$(UPGRADE_BASELINE_REF)"; \
+	fi
+	@test "$$(git -C "$(UPGRADE_BASELINE_DIR)" rev-parse HEAD)" = "$$(git rev-parse "$(UPGRADE_BASELINE_REF)")"
+	@test -z "$$(git -C "$(UPGRADE_BASELINE_DIR)" status --porcelain)"
+	$(MAKE) -C "$(UPGRADE_BASELINE_DIR)" docker-build IMG="$(UPGRADE_BASELINE_IMAGE)"
+	KUBECONFIG="$(abspath $(CHAINSAW_KUBECONFIG))" CHAINSAW_CLUSTER="$(CHAINSAW_CLUSTER)" \
+		UPGRADE_BASELINE_DIR="$(UPGRADE_BASELINE_DIR)" UPGRADE_BASELINE_IMAGE="$(UPGRADE_BASELINE_IMAGE)" \
+		UPGRADE_EVIDENCE_DIR="$(UPGRADE_EVIDENCE_DIR)" IMG="$(IMG)" PRODUCT_VERSION="$(PRODUCT_VERSION)" \
+		bash hack/test-framework-upgrade.sh
+
 .PHONY: cleanup-chainsaw-cluster
 cleanup-chainsaw-cluster: ## Tear down the Kind cluster used for chainsaw e2e tests
 	$(KIND) delete cluster --name $(CHAINSAW_CLUSTER)
